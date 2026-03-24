@@ -25,6 +25,25 @@ def build_output_dir(base_dir: str, variant: str, run_name: str | None) -> Path:
     return output_dir
 
 
+def evaluate_model_paths(args, model_paths: dict[str, str]):
+    from src.smart_flip.evaluation.sliding_window import SlidingWindowEvaluator
+
+    evaluator = SlidingWindowEvaluator(
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        seed=args.seed,
+        stride=args.stride,
+        max_length=args.max_length,
+        cache_dir=args.eval_cache_dir,
+    )
+    evaluator.run(model_paths, include_c4=args.include_c4, c4_samples=args.c4_samples)
+
+    run_name = args.run_name or datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_path = Path(args.results_eval_dir) / f"{run_name}.json"
+    evaluator.save_results(output_path)
+    print(f"\nSaved evaluation results to {output_path}")
+    return output_path
+
+
 def run_quantize(args):
     from src.smart_flip.calibration import load_calibration_data
     from src.smart_flip.quantization.quantizer import QuantizationConfig, SmartFlipAWQQuantizerXL
@@ -84,72 +103,85 @@ def run_quantize(args):
         json.dump(metadata, handle, indent=2)
 
     print(f"\nSaved {args.variant} model to {output_dir}")
+    return output_dir
 
 
-def run_evaluate(args):
-    from src.smart_flip.evaluation.sliding_window import SlidingWindowEvaluator
+def run_float_model(args):
+    evaluate_model_paths(args, {"float_model": args.model_path})
 
-    evaluator = SlidingWindowEvaluator(
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        seed=args.seed,
-        stride=args.stride,
-        max_length=args.max_length,
-        cache_dir=args.eval_cache_dir,
-    )
 
-    model_paths = {"fp": args.fp_model_path}
-    if args.awq_raw_path:
-        model_paths["awq_raw"] = args.awq_raw_path
-    if args.awq_flip_path:
-        model_paths["awq_flip"] = args.awq_flip_path
+def run_raw_quantize(args):
+    output_dir = run_quantize(args)
+    evaluate_model_paths(args, {"raw_quantize": str(output_dir)})
 
-    evaluator.run(model_paths, include_c4=args.include_c4, c4_samples=args.c4_samples)
 
-    output_path = Path(args.results_eval_dir) / f"{args.run_name or datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
-    evaluator.save_results(output_path)
-    print(f"\nSaved evaluation results to {output_path}")
+def run_flip_quantize(args):
+    output_dir = run_quantize(args)
+    evaluate_model_paths(args, {"flip_quantize": str(output_dir)})
+
+
+def run_compare_all(args):
+    model_paths = {
+        "float_model": args.model_path,
+        "raw_quantize": args.awq_raw_path,
+        "flip_quantize": args.awq_flip_path,
+    }
+    evaluate_model_paths(args, model_paths)
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Smart Flip AWQ project entrypoint")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="mode", required=True)
 
-    quantize = subparsers.add_parser("quantize", help="Create awq_raw or awq_flip model")
-    quantize.add_argument("--model-path", required=True, help="HF model name or local model path")
-    quantize.add_argument("--variant", choices=["awq_raw", "awq_flip"], required=True)
-    quantize.add_argument("--run-name", default=None)
-    quantize.add_argument("--results-models-dir", default="./results/models")
-    quantize.add_argument("--calibration-cache-dir", default="./data/cache/calibration")
-    quantize.add_argument("--calib-dataset", choices=["c4", "wikitext2", "wikitext2-simple"], default="c4")
-    quantize.add_argument("--n-calib", type=int, default=128)
-    quantize.add_argument("--calib-seqlen", type=int, default=2048)
-    quantize.add_argument("--seed", type=int, default=42)
-    quantize.add_argument("--bits", type=int, default=4, choices=[3, 4])
-    quantize.add_argument("--n-grid", type=int, default=20)
-    quantize.add_argument("--group-size", type=int, default=128)
-    quantize.add_argument("--max-tokens-per-sample", type=int, default=2048)
-    quantize.add_argument("--layer-batch-size", type=int, default=16)
-    quantize.add_argument("--lmhead-chunks", type=int, default=4)
-    quantize.add_argument("--use-james-stein", action="store_true", default=True)
-    quantize.add_argument("--no-james-stein", dest="use_james_stein", action="store_false")
-    quantize.add_argument("--knee-tolerance", type=float, default=0.0)
-    quantize.add_argument("--max-flip-percent", type=float, default=0.05)
-    quantize.set_defaults(func=run_quantize)
+    def add_eval_args(cmd):
+        cmd.add_argument("--run-name", default=None)
+        cmd.add_argument("--results-eval-dir", default="./results/eval")
+        cmd.add_argument("--eval-cache-dir", default="./data/cache/eval")
+        cmd.add_argument("--seed", type=int, default=42)
+        cmd.add_argument("--stride", type=int, default=512)
+        cmd.add_argument("--max-length", type=int, default=2048)
+        cmd.add_argument("--include-c4", action="store_true", default=True)
+        cmd.add_argument("--no-c4", dest="include_c4", action="store_false")
+        cmd.add_argument("--c4-samples", type=int, default=500)
 
-    evaluate = subparsers.add_parser("evaluate", help="Evaluate fp, awq_raw, and awq_flip")
-    evaluate.add_argument("--fp-model-path", required=True)
-    evaluate.add_argument("--awq-raw-path")
-    evaluate.add_argument("--awq-flip-path")
-    evaluate.add_argument("--run-name", default=None)
-    evaluate.add_argument("--results-eval-dir", default="./results/eval")
-    evaluate.add_argument("--eval-cache-dir", default="./data/cache/eval")
-    evaluate.add_argument("--seed", type=int, default=42)
-    evaluate.add_argument("--stride", type=int, default=512)
-    evaluate.add_argument("--max-length", type=int, default=2048)
-    evaluate.add_argument("--include-c4", action="store_true", default=True)
-    evaluate.add_argument("--no-c4", dest="include_c4", action="store_false")
-    evaluate.add_argument("--c4-samples", type=int, default=500)
-    evaluate.set_defaults(func=run_evaluate)
+    def add_quant_args(cmd):
+        cmd.add_argument("--model-path", required=True, help="HF model name or local model path")
+        cmd.add_argument("--results-models-dir", default="./results/models")
+        cmd.add_argument("--calibration-cache-dir", default="./data/cache/calibration")
+        cmd.add_argument("--calib-dataset", choices=["c4", "wikitext2", "wikitext2-simple"], default="c4")
+        cmd.add_argument("--n-calib", type=int, default=128)
+        cmd.add_argument("--calib-seqlen", type=int, default=2048)
+        cmd.add_argument("--bits", type=int, default=4, choices=[3, 4])
+        cmd.add_argument("--n-grid", type=int, default=20)
+        cmd.add_argument("--group-size", type=int, default=128)
+        cmd.add_argument("--max-tokens-per-sample", type=int, default=2048)
+        cmd.add_argument("--layer-batch-size", type=int, default=16)
+        cmd.add_argument("--lmhead-chunks", type=int, default=4)
+        cmd.add_argument("--use-james-stein", action="store_true", default=True)
+        cmd.add_argument("--no-james-stein", dest="use_james_stein", action="store_false")
+        cmd.add_argument("--knee-tolerance", type=float, default=0.0)
+        cmd.add_argument("--max-flip-percent", type=float, default=0.05)
+        add_eval_args(cmd)
+
+    float_model = subparsers.add_parser("float_model", help="Evaluate the original float model only")
+    float_model.add_argument("--model-path", required=True, help="HF model name or local model path")
+    add_eval_args(float_model)
+    float_model.set_defaults(func=run_float_model)
+
+    raw_quantize = subparsers.add_parser("raw_quantize", help="Quantize with raw AWQ, then evaluate that model")
+    add_quant_args(raw_quantize)
+    raw_quantize.set_defaults(func=run_raw_quantize, variant="awq_raw")
+
+    flip_quantize = subparsers.add_parser("flip_quantize", help="Quantize with AWQ plus smart flip, then evaluate that model")
+    add_quant_args(flip_quantize)
+    flip_quantize.set_defaults(func=run_flip_quantize, variant="awq_flip")
+
+    compare_all = subparsers.add_parser("compare_all", help="Evaluate float_model, raw_quantize, and flip_quantize together")
+    compare_all.add_argument("--model-path", required=True, help="HF model name or local model path for the float model")
+    compare_all.add_argument("--awq-raw-path", required=True)
+    compare_all.add_argument("--awq-flip-path", required=True)
+    add_eval_args(compare_all)
+    compare_all.set_defaults(func=run_compare_all)
 
     return parser
 
