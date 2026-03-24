@@ -1,0 +1,65 @@
+Windows:
+
+1. Install cloudflared
+
+Download from
+https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+And copy to C:/cloudflared/cloudflared.exe
+
+2. Check ssh
+
+From Terminal (Powershell, or Command Line), type:
+ssh --help
+
+if the command exists, then ok. Otherwise, install openssh in windows
+
+3. Create config file
+
+Create a config file: %USERPROFILE%/.ssh/config
+(%USERPROFILE% is the home user folder in windows. 
+config file has no extension (be careful with .txt but hidden))
+The content of config file (Keep the same):
+
+Host s2.xaibk.org
+    HostName s2.xaibk.org
+    User tungns
+    ProxyCommand "C:/cloudflared/cloudflared.exe" access ssh --hostname %h
+    IdentityFile C:/Users/YourUsername/.ssh/id_rsa
+
+# Other hosts will now use direct SSH, no ProxyCommand
+Host *
+    ServerAliveInterval 60
+    TCPKeepAlive yes
+    IdentitiesOnly yes
+
+Setup:
+Linux OS
+
+1)  Install cloudflared
+URL: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+2) Install openssh (checking by terminal command: ssh)
+3) Create a config file: ~/.ssh/config with the following content (Note: Put the correct path for cloudflared by replacing /usr/local/bin/cloudflared with the correct one) (Note: be careful that there is no extension for config file)
+
+Host s2.xaibk.org
+  Hostname s2.xaibk.org
+  User tungns
+  ProxyCommand /usr/local/bin/cloudflared access ssh --hostname %h
+
+Mac OS
+
+1)  Install cloudflared with homebrew
+brew install cloudflared
+2) Create a config file: ~/.ssh/config with the following content (Note: Put the correct path for cloudflared by replacing /usr/local/bin/cloudflared with the correct one) (Note: be careful that there is no extension for config file)
+
+Host s2.xaibk.org
+  HostName s2.xaibk.org
+  User tungns
+  ProxyCommand /opt/homebrew/bin/cloudflared access ssh --hostname %h
+
+4. Connect
+
+From terminal:
+
+ssh tungns@s2.xaibk.org
+
+Enter password: tung1
