@@ -8,3 +8,7 @@ env/
 venv/
 .env
 .claude
+results/models/*
+results/eval/*
+data/cache/*
+!.gitkeep
