@@ -1,0 +1,379 @@
+\documentclass[table, 11pt]{article}
+\usepackage[final]{acl}
+
+% Standard package includes
+%\usepackage
+\usepackage{booktabs}
+\usepackage{bm}
+\usepackage{tikz}
+\usetikzlibrary{bayesnet}
+\usepackage{times}
+\usepackage{blindtext}
+\usepackage{latexsym}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{makecell}
+\usepackage{amssymb}
+\usepackage{dsfont}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{threeparttable}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{float}
+\usepackage{amsfonts}
+\usepackage{enumitem} % Include enumitem package
+\renewcommand{\algorithmicrequire}{\textbf{Input:}}
+\renewcommand{\algorithmicensure}{\textbf{Output:}}
+
+% For proper rendering and hyphenation of words containing Latin characters (including in bib files)
+\usepackage[T1]{fontenc}
+% For Vietnamese characters
+% \usepackage[T5]{fontenc}
+% See https://www.latex-project.org/help/documentation/encguide.pdf for other character sets
+
+% This assumes your files are encoded as UTF8
+\usepackage[utf8]{inputenc}
+
+% This is not strictly necessary, and may be commented out,
+% but it will improve the layout of the manuscript,
+% and will typically save some space.
+\usepackage{microtype}
+
+% This is also not strictly necessary, and may be commented out.
+% However, it will improve the aesthetics of text in
+% the typewriter font.
+\usepackage{inconsolata}
+
+%Including images in your LaTeX document requires adding
+%additional package(s)
+\usepackage{graphicx}
+
+% If the title and author information does not fit in the area allocated, uncomment the following
+%
+%\setlength\titlebox{<dim>}
+%
+% and set <dim> to something 5cm or larger.
+\usepackage{multirow}
+\usepackage[normalem]{ulem}
+\renewcommand{\qedsymbol}{}
+\newtheorem{proposition}{Proposition}
+
+\definecolor{lightgray}{gray}{0.80}
+\definecolor{darkgreen}{rgb}{0.0, 0.5, 0.0}
+
+\newcolumntype{g}{>{\columncolor{lightgray}}c}
+% \newcommand*{\method}{\textsc{SRE}\@\xspace}
+
+\title{Expectation-Guided Bias Correction for Weight-Only Post-Training Quantization}
+
+\author{
+%   \textbf{Minh-Phuc Truong\textsuperscript{1}\footnotemark[1]},
+%     \textbf{Hai An Vu\textsuperscript{1}\footnotemark[1]},
+%   \textbf{Tu Vu\textsuperscript{2}\footnotemark[1]},
+%   \textbf{Diep Thi-Ngoc Nguyen\textsuperscript{3}}, \\
+%    \textbf{Linh Ngo Van\textsuperscript{1,\dag}}, 
+%   \textbf{Thien Huu Nguyen\textsuperscript{4}},
+%   \textbf{Trung Le\textsuperscript{5}}
+%   \bigskip \\
+% \textsuperscript{1}Hanoi University of Science and Technology,
+% \textsuperscript{2}ByteDance Inc, \\
+% \textsuperscript{3}VNU University of Engineering and Technology,
+% \textsuperscript{4}University of Oregon,
+% \textsuperscript{5}Monash University
+}
+
+\begin{document}
+
+\maketitle
+% \renewcommand{\thefootnote}{\fnsymbol{footnote}}
+% \footnotetext[1]{Equal contribution}
+% \footnotetext[2]{Corresponding author: \href{mailto:email@domain}{ linhnv@soict.hust.edu.vn}}
+% \renewcommand*{\thefootnote}{\arabic{footnote}}
+\begin{abstract}
+
+Weight-only post-training quantization (PTQ) is a practical approach for compressing large language models to enable efficient inference under strict memory and latency constraints. Most existing low-bit quantization methods rely on nearest rounding under per-channel scaling, which minimizes local rounding error but does not explicitly account for how quantization noise interacts with the activation distribution. As a result, structured bias can accumulate at the output level. Other approaches attempt to refine quantized weights through optimization-based procedures, but often introduce additional computational complexity. We propose Expectation-Guided Bias Correction (EGBC), a lightweight and modular framework for weight-only PTQ that explicitly controls the expectation of quantization error under activation statistics. Starting from any standard uniform layer-wise quantization scheme, EGBC introduces a principled discrete correction mechanism that selectively adjusts quantized weights based on their estimated contribution to output deviation. The method further incorporates shrinkage-based activation mean estimation and dynamic outlier masking to ensure stable and well-conditioned corrections. EGBC is compatible with existing quantization pipelines and can be applied as a post-processing step. Experimental results on large language models show that our method consistently improves quantization performance while demonstrating competitive runtime efficiency.
+
+\end{abstract}
+\section{Introduction}\label{sec:intro}
+\section{Related Work}
+
+\section{Background}
+
+\subsection{Nearest-to-round weight only quantization} \label{subsec:notations}
+
+Consider a weight matrix $\mathbf{W} \in \mathbb{R}^{d_{\text{in}} \times d_{\text{out}}}$. To enable low-precision deployment (e.g., INT4 or INT8), the full-precision weights are mapped onto a discrete integer grid using uniform quantization.
+
+Under $b$-bit symmetric quantization, each element of $\mathbf{W}$ is scaled by a positive resolution (step size) $s$ and rounded to the nearest integer:
+\[
+\mathbf{W}_q = s \cdot \mathrm{clip}\!\left(
+\mathrm{round}\!\left(\frac{\mathbf{W}}{s}\right),
+Q_{\min}, Q_{\max}
+\right),
+\]
+where $Q_{\min}$ and $Q_{\max}$ denote the minimum and maximum representable integers under $b$ bits (e.g., $[-8,7]$ for INT4 or $[-128,127]$ for INT8). The operator $\mathrm{round}(\cdot)$ maps to the nearest integer and $\mathrm{clip}(\cdot)$ enforces the valid representable range. The resolution $s$ is typically determined from the dynamic range of $\mathbf{W}$, for instance $s = \max(|\mathbf{W}|)/Q_{\max}$ in the symmetric setting. 
+
+In weight-only quantization, it is common to adopt channel-wise quantization, where each output channel is assigned an independent resolution $s_j$. Since different channels often exhibit substantially different dynamic ranges, per-channel quantization improves representational fidelity while introducing negligible runtime overhead, as the scaling factors are fixed after quantization.
+
+\section{Methodology}
+
+This section introduces our proposed method (EGBC) and outlines its theoretical foundations. My method demonstrate that smart flipping strategy can effective enhance the performance of quantized models.
+
+\subsection{Bias-oriented objective}
+
+% Given a neural network model, recall that $W$ corresponding to the weight in a channel of a linear layer, and $X$ denote the layer input corresponding to a small set of $m$ data points running through the network. Assume that after applying a quantization method, we achieve $W_q$ which is the quantized version of weight $W$. Let $y = X^TW$ be the pre-activation outputs, quantization process perturbs the output distribution $p(y)$, and we have $y_q = X^TW_q$ as the outputs after quantization. A necessary condition for preserving the downstream behavior (e.g., softmax calibration and ranking stability) is to match low-order moments of the output, especially the first moment, that is:
+% \begin{equation}
+%     \mathbb{E}[y_q] \approx \mathbb{E}[y_q] \Leftrightarrow \mathbb{E}[X]^TW_q \approx \mathbb{E}[X]^TW
+% \end{equation}
+
+% We therefore propose to minimize a Bias-oriented objective via:
+% \begin{equation}
+%     \mathcal{L}_{bias}(Wq) = (\mathbb{E}[X]^T(W_q - W))^2
+% \end{equation}
+
+% This objective explicitly penalizes the shift in the mean (first moment) of the pre-activation outputs induced by quantization, i.e., it minimizes the systematic bias between $y_q$ and $y$. Unlike the nearest-to-round quantization methods~\cite{smoothquant2023, MLSYS2024_awq} that ..... Some methods although integrate the impact of input to the quantization error and process the optimization process to find the optimal $W_q$, however, ...
+
+% Recall $W \in \mathbb{R}^{d \times C}$ ($d$: input dim, $C$: output channels) denote the weights corresponding to a linear layer, and let $X \in \mathbb{R}^{d \times m}$ denote the layer input collected from a small set of $m$ data points passed through the network. Assume that after applying a quantization method, we obtain $W_q \in \mathbb{R}^{d \times C}$, the quantized version of $W$. Let $y = X^T W \in \mathbb{R}^{m \times C}$ be the pre-activation outputs before quantization. The quantization process perturbs the output distribution $p(y)$, yielding $y_q = X^T W_q$ as the outputs after quantization. 
+
+Consider a linear layer with weight matrix $W \in \mathbb{R}^{d \times C}$, where $d$ is the input dimension and $C$ is the number of output channels. Let $X \in \mathbb{R}^{d \times m}$ denote the input activations collected from $m$ calibration samples. After applying a quantization procedure, we obtain the quantized weights $W_q \in \mathbb{R}^{d \times C}$. The pre-activation outputs before quantization are given by $y = X^{\top} W \in \mathbb{R}^{m \times C}$, while the corresponding outputs after quantization are $y_q = X^{\top} W_q$. The quantization process therefore perturbs the output distribution $p(y)$ through the weight perturbation $W \rightarrow W_q$.
+
+A necessary condition for preserving the downstream behavior (e.g., softmax calibration and ranking stability) is to match low-order moments of the output distribution, in particular the first moment (mean), i.e.,
+\begin{equation}
+    \mathbb{E}[y_q] \approx \mathbb{E}[y]
+    \Leftrightarrow 
+    \mathbb{E}[X]^T W_q \approx \mathbb{E}[X]^T W.
+\end{equation}
+
+Let $\mu = \mathbb{E}[X] \in \mathbb{R}^d$, we therefore propose to directly minimize a first-moment matching objective:
+\begin{equation}
+\mathcal{L}_{\text{bias}}(W_q)
+=
+\big\|
+\mu^{\top}(W_q - W)
+\big\|_2^2
+\label{eq:bias-obj}
+\end{equation}
+
+
+This objective explicitly penalizes the shift in the mean of the pre-activation outputs induced by quantization, i.e., it minimizes the systematic bias between $y_q$ and $y$ at the distribution level.
+
+Unlike nearest-to-round (NTR) quantization methods~\cite{smoothquant2023, MLSYS2024_awq}, which primarily rely on local rounding rules and scaling strategies to reduce pointwise reconstruction error, our objective directly constrains the mean shift of the output distribution.
+
+% Some methods incorporate input statistics into the quantization process and optimize a reconstruction objective that accounts for the interaction between input and weight (e.g., second-order or Hessian-based approaches). However, these methods mainly aim to reduce the overall reconstruction error and variance of the output perturbation. In contrast, our formulation explicitly targets the systematic bias component of the output shift, making it a complementary post-correction step to existing quantization strategies.
+
+
+\subsection{Weight Selection Criterion for Flipping}\label{sec:flip-cri}
+
+Since the early days of quantization, researchers have questioned whether nearest-to-rounding (NTR) is truly optimal for weight quantization. A key limitation of NTR is that it ignores how layer inputs contribute to the overall output error. Existing solutions mainly fall into two categories: transformation-based methods (e.g., flattening, rotation, scaling)~\cite{smoothquant2023, MLSYS2024_awq, flatquant2025} and Hessian-based optimization~\cite{OBQ2022, frantar2023optq}. While the former mitigates activation outliers, it still relies on NTR and does not directly model input-dependent error. The latter explicitly optimizes the error but is computationally much slower. In this paper, we show that a smart flipping strategy - mapping $W_q$ to the opposite side of the nearest level - can significantly improve quantization quality.
+
+\paragraph{Effect of Flipping on Mean Bias ?} Assume that $W_q$ is obtained via a NTR quantization scheme, recall that the proposed first-moment matching objective is
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{\text{bias}}(W_q)
+&=
+\big\|
+\mu^{\top}(W_q - W)
+\big\|_2^2 \\
+&=
+\sum_{j=1}^{C}
+\left( \mu^{\top}(w_{q,j} - w_j) \right)^2.
+\end{aligned}
+\end{equation}
+where $w_j$ and $w_{q,j}$ denote the $j$-th output channel of $W$ and $W_q$, respectively. Therefore, the loss decomposes into independent per-channel squared mean-bias terms.
+
+Consider flipping a single quantized weight $w_{q,ij}$. In integer space, a flip corresponds to moving to the opposite neighboring quantization level, which changes the weight by approximately resolution $\pm s_j$. This induces a change in the mean-bias term:
+\begin{equation}
+\mu^{\top}(w_{q,j} - w_j)
+\;\longrightarrow\;
+\mu^{\top}(w_{q,j} - w_j) \;\pm\; \mu_i s_j.
+\end{equation}
+Let
+\begin{equation}
+b_j := \mu^{\top}(w_{q,j} - w_j).
+\label{eq:per-channel-loss}
+\end{equation}
+Then each flip adds or subtracts an amount $\mu_i s_j$ to $b_j$, and the
+corresponding per-channel loss becomes
+\begin{equation}
+(b_j \pm \mu_i s_j)^2.
+\label{eq:b-modify}
+\end{equation}
+This shows that flipping is not merely a local rounding adjustment. Instead, it performs a structured correction on the global mean shift of the output distribution. If the sign of the flip is chosen to reduce $|b_j|$, the squared bias term decreases; otherwise, it increases. Therefore, weight flipping can be interpreted as a discrete, activation-aware bias correction mechanism that directly optimizes the first-moment alignment between $y_q$ and $y$.
+
+\paragraph{Which Weights Should Be Flipped?}
+The effect of flipping a single weight $w_{q,ij}$ is closely related to the magnitude of $|\mu_i|$. The importance of activation magnitude has been recognized in prior work~\cite{smoothquant2023, flatquant2025, MLSYS2024_awq}, where it is leveraged to design effective transformation mechanisms. In contrast, our work is the first to explicitly analyze how activation magnitude influences the shift of the output distribution induced by quantization.
+
+When $|\mu_i|$ is extremely small, we have $\Delta b_j = \pm \mu_i s_j \approx 0$,
+and therefore the change in the squared bias,
+\begin{equation}
+(b_j \pm \mu_i s_j)^2 - b_j^2,
+\end{equation}
+is negligible. In this regime, dimension $i$ carries almost zero mean activation,
+so it contributes little to systematic output shift.
+Flipping such weights therefore induces only a negligible correction to the first-moment mismatch. Moreover, input dimensions with near-zero mean activations typically behave in a sign-symmetric manner across the calibration distribution, meaning their contributions tend to cancel out in expectation. For these dimensions, nearest-to-rounding already provides a stable approximation, and additional flipping offers limited benefit while potentially introducing unnecessary perturbations.
+
+On the other hand, when $|\mu_i|$ is large, the flip induces a substantial discrete correction step. The following result characterizes precisely when such a flip decreases the bias objective.
+
+\begin{proposition}
+Let $b_j = \mu^\top (w_{q,j} - w_j)$.
+Suppose flipping weight $w_{q,ij}$ changes the quantization error
+by $e_i \rightarrow e_i \pm s_j$, and the sign is chosen to reduce $|b_j|$.
+Then
+\begin{equation}
+\Delta \mathcal{L}_{\text{bias},j}
+=
+- 2 |b_j| |\mu_i| s + \mu_i^2 s_j^2.
+\end{equation}
+Flipping reduces the loss if and only if
+\begin{equation}
+2 |b_j| > |\mu_i| s.
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Let $e = w_j - w_{q,j}$, so that $b_j = \mu^\top e$.
+After flipping $w_{q,ij}$, the bias becomes
+\begin{equation}
+b_j' = b_j \pm \mu_i s_j.
+\end{equation}
+Therefore,
+\begin{equation}
+\Delta \mathcal{L}_{\text{bias},j}
+=
+(b_j \pm \mu_i s_j)^2 - b_j^2
+=
+\pm 2 b_j \mu_i s_j + \mu_i^2 s_j^2.
+\end{equation}
+Choosing the sign that decreases $|b_j|$ yields
+\begin{equation}
+\Delta \mathcal{L}_{\text{bias},j}
+=
+- 2 |b_j| |\mu_i| s + \mu_i^2 s_j^2,
+\end{equation}
+which is negative precisely when
+\begin{equation}
+2 |b_j| > |\mu_i| s_j.
+\end{equation}
+\end{proof}
+This condition reveals that $|\mu_i| s_j$ acts as a discrete correction step size.
+If $|\mu_i|$ is excessively large, the induced step may overshoot zero,
+leading to an increase in $b_j^2$ despite selecting the optimal sign.
+Such dimensions generate coarse, unstable updates.
+Effective flipping therefore occurs in an intermediate regime:
+$|\mu_i|$ must be large enough to meaningfully correct the bias,
+yet not so large that the discrete step becomes destructive.
+This observation naturally motivates filtering extreme-mean
+dimensions during the greedy selection process.
+
+\subsection{Discrete Updates in Quantized Space}
+
+\paragraph{Knee-Point Based Selection of Flipping Candidates.}
+
+As discussed in the previous Sub-section, flipping is intended to compensate quantization bias while preserving the most sensitive \emph{input} dimensions. We define the per-input magnitude
+\[
+a_i := |\mu_i|,\qquad i=1,\dots,d .
+\]
+We sort $\{a_i\}_{i=1}^{d}$ in descending order,
+\[
+a_{(1)} \ge a_{(2)} \ge \dots \ge a_{(d)} .
+\]
+To robustly locate the transition from \emph{highly influential} to \emph{moderate} inputs, we apply a Kneedle-style knee detector only on the first half
+$\{a_{(t)}\}_{t=1}^{\lfloor d/2 \rfloor}$, where the knee index is obtained by the maximum-distance-to-chord criterion:
+\[
+k \;=\; \arg\max_{1 \le t \le \lfloor d/2 \rfloor}\Bigl|\hat a_{(t)} - \ell(t)\Bigr| ,
+\]
+with $\hat a_{(t)}$ being the normalized sequence and $\ell(t)$ the line connecting the two endpoints of the selected region.
+The knee yields a threshold $\tau := a_{(k)}$ and defines the \emph{eligible input-index set}
+\[
+\mathcal{I} \;=\; \{\, i \in \{1,\dots,d\} \mid |\mu_i| \le \tau \,\}.
+\]
+Equivalently, all weights in $W_q$ connected to excluded (outlier) inputs, i.e.\ $\{w_{q,\,j i}: i \notin \mathcal{I}\}$, are never flipped.
+Therefore, flipping candidates are restricted to weights whose \emph{input index} satisfies $i \in \mathcal{I}$.
+Furthermore, as discussed in Sub-section~\ref{sec:flip-cri}, 
+weights corresponding to extremely small $|\mu_i|$ are also discouraged from flipping due to their negligible contribution to bias correction. Consequently, the final flipping decisions are made under a per-output-channel 
+budget constraint (i.e., at most $p\%$ of the eligible weights are considered flipping candidates.).
+
+\paragraph{Combinatorial Formulation of the Discrete Update.}
+
+From (\ref{eq:per-channel-loss}), the per-channel bias term is 
+$b_j = \mu^\top (w_{q,j} - w_j)$. A discrete flip of $w_{q,j,i}$ moves it to the adjacent quantization level, shifting the dequantized weight by approximately $\pm s_j$ and thus modifying $b_j$ by $\pm \mu_i s_j$ as in (\ref{eq:b-modify}). Denoting by $\Delta w_{q,j,i}$ the induced change in the de-quantized weight after a single flip (so that under uniform per-channel quantization $\Delta w_{q,j,i} = d_{j,i}s_j$ with $d_{j,i}\in\{\pm1\}$), the corresponding change in bias is $\mu_i \Delta w_{q,j,i}$. For each eligible index $i \in \mathcal{I}$, we define the induced signed correction as $v_{j,i} = \mu_i \Delta w_{q,j,i}$.
+
+We further retain only those indices for which the update reduces the bias magnitude, i.e.,
+$\operatorname{sign}(v_{j,i}) = \operatorname{sign}(b_j)$. This yields a refined per-channel eligible index set $\mathcal{I}_j$. 
+Selecting a subset $S \subset \mathcal{I}_j$ then produces total correction 
+$\sum_{i \in S} v_{j,i}$. 
+Under the per-channel flipping budget introduced earlier, at most $p\%$ of eligible weights may be updated, i.e.,
+\[
+|S| \le B_j, 
+\quad 
+B_j = \left\lfloor \frac{p}{100} \cdot |\mathcal{I}| \right\rfloor.
+\]
+The discrete update therefore solves
+\[
+\min_{S \subset \mathcal{I}}
+\left|
+b_j - \sum_{i \in S} v_{j,i}
+\right|
+\quad
+\text{s.t. } |S| \le B_j,
+\]
+an approximate Subset-Sum problem under a sparsity constraint.
+
+Beyond its combinatorial nature, the update is constrained by quantization geometry. 
+A flip moves $w_{q,j,i}$ away from its nearest rounding point to the adjacent level, increasing local quantization error. 
+To limit this distortion, indices in $\mathcal{I}_j$ are ordered by their distance to the midpoint between adjacent quantization levels (i.e., the rounding boundary). We prioritize weights with larger rounding deviation, which lie closer to the decision boundary and incur smaller local distortion when flipped.
+
+Rather than exploring arbitrary subsets, we restrict the search to prefix subsets induced by this ordering. 
+Let the reordered indices be $(i_1,\dots,i_n)$. 
+For $k=0,\dots,n$, define $S_k = \{i_1,\dots,i_k\}$ and select
+\[
+k^* = \arg\min_k 
+\left|
+b_j - \sum_{t=1}^{k} v_{j,i_t}
+\right|.
+\]
+The final update set is $S_{k^*}$ (clipped to satisfy $|S_{k^*}| \le B_j$), and the corresponding quantized weights $\{w_{q,j,i} : i \in S_{k^*}\}$ are flipped by $\Delta w_{q,j,i}$. 
+The procedure requires $O(|\mathcal{I}| \log |\mathcal{I}|)$ sorting and $O(|\mathcal{I}|)$ scanning per channel.
+
+
+
+% Instead of performing knee detection over the entire sequence, we restrict the search to the upper half of the sorted magnitudes to stabilize the transition estimation between high-activation and moderate-activation channels. 
+% Within this region, we apply a Kneedle-style maximum-distance-to-chord criterion: 
+% a straight line is drawn between the first and last points of the selected region, and the channel with the maximum vertical deviation from this line is identified as the knee point. 
+% An optional tolerance offset shifts the knee index slightly toward smaller magnitudes to obtain a more conservative threshold.
+
+% The knee point defines an activation threshold $\tau$. 
+% Channels with $m_c > \tau$ are treated as outliers and excluded from flipping (protected region), 
+% while channels with $m_c \le \tau$ constitute the candidate pool for flipping. 
+% Importantly, this masking step only determines eligibility; the actual number of flipped weights is further constrained by the flipping budget (Section~X), 
+% where at most a fixed percentage of weights per output channel is selected according to the bias-reduction score.
+
+% This two-stage design ensures that highly sensitive channels remain stable, 
+% while moderate-activation channels are selectively leveraged to reduce post-quantization bias.
+
+\subsection{Shrinkage Estimation of Activation Means}
+
+
+
+\section{Experiments}
+
+
+
+\section{Conclusion}
+
+\section{Limitations}
+
+
+\section*{Acknowledgements}
+
+
+
+\bibliography{ref}
+\bibliographystyle{acl_natbib}
+
+\newpage
+\appendix
+
+
+
+\end{document}
