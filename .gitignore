@@ -9,6 +9,7 @@ venv/
 .env
 .claude
 /bash/
+/tmp*/
 results/models/*
 results/eval/*
 data/cache/*

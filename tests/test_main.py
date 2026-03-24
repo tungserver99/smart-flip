@@ -32,6 +32,7 @@ class ParserModeTests(unittest.TestCase):
             model_path="fp-model",
             awq_raw_path="raw-model",
             awq_flip_path="flip-model",
+            models_root="/models",
             run_name="cmp",
             results_eval_dir="./results/eval",
             eval_cache_dir="./data/cache/eval",
@@ -52,6 +53,24 @@ class ParserModeTests(unittest.TestCase):
             called_args[1],
             {"float_model": "fp-model", "raw_quantize": "raw-model", "flip_quantize": "flip-model"},
         )
+
+    def test_resolve_model_reference_prefers_existing_path(self):
+        with patch("main.Path.exists", side_effect=[True]):
+            resolved = main.resolve_model_reference("existing-model", models_root="/models")
+
+        self.assertEqual(resolved, "existing-model")
+
+    def test_resolve_model_reference_finds_model_under_models_root(self):
+        with patch("main.Path.exists", side_effect=[False, True]):
+            resolved = main.resolve_model_reference("Mistral-7B-v0.3", models_root="/models")
+
+        self.assertEqual(resolved, str(main.Path("/models") / "Mistral-7B-v0.3"))
+
+    def test_resolve_model_reference_leaves_huggingface_id_untouched(self):
+        with patch("main.Path.exists", side_effect=[False, False]):
+            resolved = main.resolve_model_reference("mistralai/Mistral-7B-v0.3", models_root="/models")
+
+        self.assertEqual(resolved, "mistralai/Mistral-7B-v0.3")
 
 
 if __name__ == "__main__":

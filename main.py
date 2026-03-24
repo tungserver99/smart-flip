@@ -25,6 +25,18 @@ def build_output_dir(base_dir: str, variant: str, run_name: str | None) -> Path:
     return output_dir
 
 
+def resolve_model_reference(model_ref: str, models_root: str = "/models") -> str:
+    model_path = Path(model_ref)
+    if model_path.exists():
+        return str(model_path)
+
+    candidate = Path(models_root) / model_ref
+    if candidate.exists():
+        return str(candidate)
+
+    return model_ref
+
+
 def evaluate_model_paths(args, model_paths: dict[str, str]):
     from src.smart_flip.evaluation.sliding_window import SlidingWindowEvaluator
 
@@ -51,12 +63,14 @@ def run_quantize(args):
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    resolved_model = resolve_model_reference(args.model_path, models_root=args.models_root)
+
+    tokenizer = AutoTokenizer.from_pretrained(resolved_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
+        resolved_model,
         torch_dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
@@ -95,6 +109,7 @@ def run_quantize(args):
     metadata = {
         "variant": args.variant,
         "source_model": args.model_path,
+        "resolved_source_model": resolved_model,
         "config": vars(args),
         "quantizer_config": config.__dict__,
         "layer_stats": quantizer.layer_stats,
@@ -107,7 +122,10 @@ def run_quantize(args):
 
 
 def run_float_model(args):
-    evaluate_model_paths(args, {"float_model": args.model_path})
+    evaluate_model_paths(
+        args,
+        {"float_model": resolve_model_reference(args.model_path, models_root=args.models_root)},
+    )
 
 
 def run_raw_quantize(args):
@@ -122,9 +140,9 @@ def run_flip_quantize(args):
 
 def run_compare_all(args):
     model_paths = {
-        "float_model": args.model_path,
-        "raw_quantize": args.awq_raw_path,
-        "flip_quantize": args.awq_flip_path,
+        "float_model": resolve_model_reference(args.model_path, models_root=args.models_root),
+        "raw_quantize": resolve_model_reference(args.awq_raw_path, models_root=args.models_root),
+        "flip_quantize": resolve_model_reference(args.awq_flip_path, models_root=args.models_root),
     }
     evaluate_model_paths(args, model_paths)
 
@@ -134,6 +152,7 @@ def build_parser():
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
     def add_eval_args(cmd):
+        cmd.add_argument("--models-root", default="/models")
         cmd.add_argument("--run-name", default=None)
         cmd.add_argument("--results-eval-dir", default="./results/eval")
         cmd.add_argument("--eval-cache-dir", default="./data/cache/eval")
