@@ -94,7 +94,7 @@ def run_quantize(args):
         origin_method=args.origin_method,
         post_correction=args.post_correction,
     )
-    quantizer, config = create_quantizer(
+    quantizer, base_config, correction = create_quantizer(
         model=model,
         tokenizer=tokenizer,
         device=device,
@@ -114,7 +114,8 @@ def run_quantize(args):
         "source_model": args.model_path,
         "resolved_source_model": resolved_model,
         "config": build_metadata_config(args),
-        "quantizer_config": config.__dict__,
+        "base_config": base_config.__dict__,
+        "post_correction_config": correction.config.__dict__ if correction is not None else None,
         "layer_stats": quantizer.layer_stats,
     }
     with open(output_dir / "metadata.json", "w", encoding="utf-8") as handle:

@@ -18,6 +18,12 @@ The quantization flow is now split conceptually into:
 - `origin_method`: the base quantizer, currently `awq`
 - `post_correction`: the correction stage, currently `none` or `smart_flip`
 
+Code ownership:
+- `src/smart_flip/quantization/awq.py`: AWQ raw backend
+- `src/smart_flip/quantization/state.py`: quantized tensor state shared across stages
+- `src/smart_flip/post_correction/smart_flip.py`: Smart Flip post-correction
+- `src/smart_flip/quantization/pipeline.py`: assembly of backend + correction
+
 Current CLI recipes:
 - `raw_quantize` = `origin_method=awq` + `post_correction=none`
 - `flip_quantize` = `origin_method=awq` + `post_correction=smart_flip`
