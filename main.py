@@ -25,6 +25,10 @@ def build_output_dir(base_dir: str, variant: str, run_name: str | None) -> Path:
     return output_dir
 
 
+def build_metadata_config(args) -> dict:
+    return {key: value for key, value in vars(args).items() if not callable(value)}
+
+
 def resolve_model_reference(model_ref: str, models_root: str = "/models") -> str:
     model_path = Path(model_ref)
     if model_path.exists():
@@ -110,7 +114,7 @@ def run_quantize(args):
         "variant": args.variant,
         "source_model": args.model_path,
         "resolved_source_model": resolved_model,
-        "config": vars(args),
+        "config": build_metadata_config(args),
         "quantizer_config": config.__dict__,
         "layer_stats": quantizer.layer_stats,
     }
