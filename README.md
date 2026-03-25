@@ -12,6 +12,18 @@ Project structure refactored from the original experimental scripts, with the al
 - `docs/reference/`: reference docs used to anchor the implementation
 - `legacy/`: archived experimental scripts kept for traceability
 
+## Quantization Architecture
+
+The quantization flow is now split conceptually into:
+- `origin_method`: the base quantizer, currently `awq`
+- `post_correction`: the correction stage, currently `none` or `smart_flip`
+
+Current CLI recipes:
+- `raw_quantize` = `origin_method=awq` + `post_correction=none`
+- `flip_quantize` = `origin_method=awq` + `post_correction=smart_flip`
+
+This keeps today's behavior unchanged while making the pipeline ready for future backends such as GPTQ.
+
 ## Model Resolution
 
 `--model-path` now supports both:
@@ -29,9 +41,9 @@ This means on your server you can pass `--model-path Mistral-7B-v0.3` and it wil
 ## Modes
 
 - `float_model`: evaluate the original float model only
-- `raw_quantize`: build standard AWQ, then evaluate that quantized model
-- `flip_quantize`: build AWQ + smart flip, then evaluate that quantized model
-- `compare_all`: evaluate float, AWQ raw, and AWQ + flip together
+- `raw_quantize`: build the chosen origin method without correction, then evaluate that quantized model
+- `flip_quantize`: build the chosen origin method and then apply smart flip, then evaluate that quantized model
+- `compare_all`: evaluate float, raw, and corrected models together
 
 ## Examples
 
@@ -54,6 +66,7 @@ Build and evaluate standard AWQ:
 ```bash
 python main.py raw_quantize \
   --model-path Mistral-7B-v0.3 \
+  --origin-method awq \
   --run-name <run_name>
 ```
 
@@ -62,6 +75,7 @@ Build and evaluate AWQ + smart flip:
 ```bash
 python main.py flip_quantize \
   --model-path Mistral-7B-v0.3 \
+  --origin-method awq \
   --run-name <run_name>
 ```
 
@@ -70,8 +84,8 @@ Compare all three milestones:
 ```bash
 python main.py compare_all \
   --model-path Mistral-7B-v0.3 \
-  --awq-raw-path <results/models/awq_raw/...> \
-  --awq-flip-path <results/models/awq_flip/...>
+  --raw-path <results/models/awq_raw/...> \\
+  --flip-path <results/models/awq_flip/...>
 ```
 
 ## Shell Scripts
@@ -79,6 +93,7 @@ python main.py compare_all \
 The scripts in `scripts/bash/` default to:
 - `MODEL_PATH=Mistral-7B-v0.3`
 - `MODELS_ROOT=/models`
+- `ORIGIN_METHOD=awq`
 
 So on your server they will use `/models/Mistral-7B-v0.3` automatically unless you override them.
 

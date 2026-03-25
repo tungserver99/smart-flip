@@ -16,9 +16,9 @@ class ParserModeTests(unittest.TestCase):
                 "compare_all",
                 "--model-path",
                 "dummy-model",
-                "--awq-raw-path",
+                "--raw-path",
                 "raw-model",
-                "--awq-flip-path",
+                "--flip-path",
                 "flip-model",
             ],
         }
@@ -27,11 +27,22 @@ class ParserModeTests(unittest.TestCase):
             args = parser.parse_args(argv)
             self.assertEqual(args.mode, mode)
 
+    def test_quantize_modes_set_origin_and_post_correction_defaults(self):
+        parser = main.build_parser()
+
+        raw_args = parser.parse_args(["raw_quantize", "--model-path", "dummy-model"])
+        self.assertEqual(raw_args.origin_method, "awq")
+        self.assertEqual(raw_args.post_correction, "none")
+
+        flip_args = parser.parse_args(["flip_quantize", "--model-path", "dummy-model"])
+        self.assertEqual(flip_args.origin_method, "awq")
+        self.assertEqual(flip_args.post_correction, "smart_flip")
+
     def test_compare_all_dispatches_all_three_model_paths(self):
         args = SimpleNamespace(
             model_path="fp-model",
-            awq_raw_path="raw-model",
-            awq_flip_path="flip-model",
+            raw_path="raw-model",
+            flip_path="flip-model",
             models_root="/models",
             run_name="cmp",
             results_eval_dir="./results/eval",

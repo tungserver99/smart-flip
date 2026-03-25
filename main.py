@@ -62,7 +62,7 @@ def evaluate_model_paths(args, model_paths: dict[str, str]):
 
 def run_quantize(args):
     from src.smart_flip.calibration import load_calibration_data
-    from src.smart_flip.quantization.quantizer import QuantizationConfig, SmartFlipAWQQuantizerXL
+    from src.smart_flip.quantization.pipeline import QuantizationRecipe, create_quantizer
 
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -90,28 +90,27 @@ def run_quantize(args):
         cache_dir=args.calibration_cache_dir,
     )
 
-    config = QuantizationConfig(
-        bits=args.bits,
-        n_grid=args.n_grid,
-        group_size=args.group_size,
-        use_flip=(args.variant == "awq_flip"),
-        knee_tolerance=args.knee_tolerance,
-        max_tokens_per_sample=args.max_tokens_per_sample,
-        layer_batch_size=args.layer_batch_size,
-        lmhead_chunks=args.lmhead_chunks,
-        max_flip_percent=args.max_flip_percent,
-        use_james_stein=args.use_james_stein,
+    recipe = QuantizationRecipe(
+        origin_method=args.origin_method,
+        post_correction=args.post_correction,
     )
-
-    quantizer = SmartFlipAWQQuantizerXL(model=model, tokenizer=tokenizer, device=device, config=config)
+    quantizer, config = create_quantizer(
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        args=args,
+        recipe=recipe,
+    )
     quantizer.quantize_model_sequential(calibration_data, n_samples=args.n_calib)
 
-    output_dir = build_output_dir(args.results_models_dir, args.variant, args.run_name)
+    output_dir = build_output_dir(args.results_models_dir, recipe.variant_name, args.run_name)
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
 
     metadata = {
-        "variant": args.variant,
+        "variant": recipe.variant_name,
+        "origin_method": recipe.origin_method,
+        "post_correction": recipe.post_correction,
         "source_model": args.model_path,
         "resolved_source_model": resolved_model,
         "config": build_metadata_config(args),
@@ -121,7 +120,7 @@ def run_quantize(args):
     with open(output_dir / "metadata.json", "w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2)
 
-    print(f"\nSaved {args.variant} model to {output_dir}")
+    print(f"\nSaved {recipe.variant_name} model to {output_dir}")
     return output_dir
 
 
@@ -145,14 +144,14 @@ def run_flip_quantize(args):
 def run_compare_all(args):
     model_paths = {
         "float_model": resolve_model_reference(args.model_path, models_root=args.models_root),
-        "raw_quantize": resolve_model_reference(args.awq_raw_path, models_root=args.models_root),
-        "flip_quantize": resolve_model_reference(args.awq_flip_path, models_root=args.models_root),
+        "raw_quantize": resolve_model_reference(args.raw_path, models_root=args.models_root),
+        "flip_quantize": resolve_model_reference(args.flip_path, models_root=args.models_root),
     }
     evaluate_model_paths(args, model_paths)
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Smart Flip AWQ project entrypoint")
+    parser = argparse.ArgumentParser(description="Smart Flip quantization project entrypoint")
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
     def add_eval_args(cmd):
@@ -169,6 +168,7 @@ def build_parser():
 
     def add_quant_args(cmd):
         cmd.add_argument("--model-path", required=True, help="HF model name or local model path")
+        cmd.add_argument("--origin-method", choices=["awq"], default="awq")
         cmd.add_argument("--results-models-dir", default="./results/models")
         cmd.add_argument("--calibration-cache-dir", default="./data/cache/calibration")
         cmd.add_argument("--calib-dataset", choices=["c4", "wikitext2", "wikitext2-simple"], default="c4")
@@ -193,16 +193,16 @@ def build_parser():
 
     raw_quantize = subparsers.add_parser("raw_quantize", help="Quantize with raw AWQ, then evaluate that model")
     add_quant_args(raw_quantize)
-    raw_quantize.set_defaults(func=run_raw_quantize, variant="awq_raw")
+    raw_quantize.set_defaults(func=run_raw_quantize, post_correction="none")
 
     flip_quantize = subparsers.add_parser("flip_quantize", help="Quantize with AWQ plus smart flip, then evaluate that model")
     add_quant_args(flip_quantize)
-    flip_quantize.set_defaults(func=run_flip_quantize, variant="awq_flip")
+    flip_quantize.set_defaults(func=run_flip_quantize, post_correction="smart_flip")
 
     compare_all = subparsers.add_parser("compare_all", help="Evaluate float_model, raw_quantize, and flip_quantize together")
     compare_all.add_argument("--model-path", required=True, help="HF model name or local model path for the float model")
-    compare_all.add_argument("--awq-raw-path", required=True)
-    compare_all.add_argument("--awq-flip-path", required=True)
+    compare_all.add_argument("--raw-path", required=True)
+    compare_all.add_argument("--flip-path", required=True)
     add_eval_args(compare_all)
     compare_all.set_defaults(func=run_compare_all)
 
