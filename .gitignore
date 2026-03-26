@@ -10,6 +10,8 @@ venv/
 .claude
 /bash/
 /tmp*/
+wandb/
+*.wandb
 results/models/*
 results/eval/*
 data/cache/*
