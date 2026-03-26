@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 set -euo pipefail
 
 MODEL_PATH="${MODEL_PATH:-meta-llama/Meta-Llama-3-8B}"
@@ -8,7 +8,7 @@ LM_EVAL_TASK_PRESET="${LM_EVAL_TASK_PRESET:-extended}"
 INCLUDE_LM_EVAL="${INCLUDE_LM_EVAL:-1}"
 INCLUDE_C4="${INCLUDE_C4:-1}"
 USE_WANDB="${USE_WANDB:-1}"
-WANDB_PROJECT="${WANDB_PROJECT:-smartflip}"
+WANDB_PROJECT="${WANDB_PROJECT:-egbc}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 
 KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)
@@ -26,3 +26,4 @@ for knee in "${KNEE_VALUES[@]}"; do
     MODEL_PATH="$MODEL_PATH"     MODELS_ROOT="$MODELS_ROOT"     PYTHON_BIN="$PYTHON_BIN"     LM_EVAL_TASK_PRESET="$LM_EVAL_TASK_PRESET"     INCLUDE_LM_EVAL="$INCLUDE_LM_EVAL"     INCLUDE_C4="$INCLUDE_C4"     USE_WANDB="$USE_WANDB"     WANDB_PROJECT="$WANDB_PROJECT"     WANDB_ENTITY="$WANDB_ENTITY"     KNEE_TOLERANCE="$knee"     MAX_FLIP_PERCENT="$max_flip"     bash scripts/bash/run_flip_quantize.sh
   done
 done
+
