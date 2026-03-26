@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -194,6 +195,42 @@ def flatten_numeric_metrics(prefix: str, payload, flat: dict[str, float]):
         flat[prefix] = payload
 
 
+def collect_wandb_metrics(results: dict) -> dict[str, float]:
+    flat: dict[str, float] = {}
+
+    perplexity_results = results.get("perplexity", {})
+    if isinstance(perplexity_results, dict):
+        for dataset_name, variants in perplexity_results.items():
+            if not isinstance(variants, dict):
+                continue
+            for metrics in variants.values():
+                if not isinstance(metrics, dict):
+                    continue
+                perplexity = metrics.get("perplexity")
+                if isinstance(perplexity, (int, float)) and not isinstance(perplexity, bool):
+                    flat[f"perplexity/{dataset_name}"] = perplexity
+                    break
+
+    lm_eval_results = results.get("lm_eval", {})
+    if isinstance(lm_eval_results, dict):
+        for variant_payload in lm_eval_results.values():
+            if not isinstance(variant_payload, dict):
+                continue
+            summary = variant_payload.get("summary")
+            raw_results = variant_payload.get("raw", {}).get("results")
+            task_results = summary if isinstance(summary, dict) else raw_results if isinstance(raw_results, dict) else None
+            if not isinstance(task_results, dict):
+                continue
+            for task_name, metrics in task_results.items():
+                if f"lm_eval/{task_name}" in flat or not isinstance(metrics, dict):
+                    continue
+                accuracy = metrics.get("acc,none")
+                if isinstance(accuracy, (int, float)) and not isinstance(accuracy, bool):
+                    flat[f"lm_eval/{task_name}"] = accuracy
+
+    return flat
+
+
 def build_wandb_tags(args, variant: str, model_slug: str) -> list[str]:
     tags = list(getattr(args, "wandb_tags", []))
     auto_tags = [
@@ -236,8 +273,7 @@ def log_results_to_wandb(args, run_name: str, variant: str, model_paths: dict[st
     if run is None:
         return
 
-    flat_metrics: dict[str, float] = {}
-    flatten_numeric_metrics("", results, flat_metrics)
+    flat_metrics = collect_wandb_metrics(results)
     if flat_metrics:
         wandb.log(flat_metrics)
 
@@ -346,12 +382,18 @@ def run_float_model(args):
 
 def run_raw_quantize(args):
     output_dir = run_quantize(args)
-    evaluate_model_paths(args, {"raw_quantize": str(output_dir)}, variant="awq_raw")
+    try:
+        evaluate_model_paths(args, {"raw_quantize": str(output_dir)}, variant="awq_raw")
+    finally:
+        shutil.rmtree(output_dir, ignore_errors=True)
 
 
 def run_flip_quantize(args):
     output_dir = run_quantize(args)
-    evaluate_model_paths(args, {"flip_quantize": str(output_dir)}, variant="awq_flip")
+    try:
+        evaluate_model_paths(args, {"flip_quantize": str(output_dir)}, variant="awq_flip")
+    finally:
+        shutil.rmtree(output_dir, ignore_errors=True)
 
 
 def run_compare_all(args):

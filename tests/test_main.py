@@ -168,5 +168,32 @@ class ParserModeTests(unittest.TestCase):
         run_lm_eval.assert_not_called()
 
 
+
+    def test_run_raw_quantize_evaluates_then_deletes_temporary_model_dir(self):
+        args = SimpleNamespace()
+        output_dir = main.Path('./results/models/.tmp/raw-run')
+
+        with patch('main.run_quantize', return_value=output_dir) as run_quantize:
+            with patch('main.evaluate_model_paths') as evaluate_model_paths:
+                with patch('main.shutil.rmtree') as rmtree:
+                    main.run_raw_quantize(args)
+
+        run_quantize.assert_called_once_with(args)
+        evaluate_model_paths.assert_called_once_with(args, {'raw_quantize': str(output_dir)}, variant='awq_raw')
+        rmtree.assert_called_once_with(output_dir, ignore_errors=True)
+
+    def test_run_flip_quantize_deletes_temporary_model_dir_even_if_eval_fails(self):
+        args = SimpleNamespace()
+        output_dir = main.Path('./results/models/.tmp/flip-run')
+
+        with patch('main.run_quantize', return_value=output_dir) as run_quantize:
+            with patch('main.evaluate_model_paths', side_effect=RuntimeError('eval failed')):
+                with patch('main.shutil.rmtree') as rmtree:
+                    with self.assertRaisesRegex(RuntimeError, 'eval failed'):
+                        main.run_flip_quantize(args)
+
+        run_quantize.assert_called_once_with(args)
+        rmtree.assert_called_once_with(output_dir, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()

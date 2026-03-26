@@ -1,6 +1,7 @@
+import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import main
 
@@ -73,6 +74,115 @@ class RunTrackingTests(unittest.TestCase):
         self.assertEqual(logged_model_slug, "Mistral-7B-v0.3")
         self.assertEqual(output_path, main.Path("./results/eval/demo.json"))
 
+    def test_collect_wandb_metrics_keeps_only_primary_perplexity_and_acc_none(self):
+        results = {
+            "perplexity": {
+                "WikiText-2": {
+                    "flip_quantize": {
+                        "perplexity": 5.95,
+                        "total_tokens": 288937,
+                    }
+                },
+                "C4": {
+                    "flip_quantize": {
+                        "perplexity": 9.29,
+                        "total_tokens": 291381,
+                    }
+                },
+            },
+            "lm_eval": {
+                "flip_quantize": {
+                    "tasks": ["arc_easy", "hellaswag", "lambada_openai"],
+                    "summary": {
+                        "arc_easy": {
+                            "acc,none": 0.80,
+                            "acc_stderr,none": 0.01,
+                            "acc_norm,none": 0.79,
+                        },
+                        "hellaswag": {
+                            "acc,none": 0.59,
+                            "acc_norm,none": 0.78,
+                            "acc_norm_stderr,none": 0.004,
+                        },
+                        "lambada_openai": {
+                            "acc,none": 0.73,
+                            "perplexity,none": 3.45,
+                            "perplexity_stderr,none": 0.06,
+                        },
+                    },
+                    "raw": {
+                        "results": {
+                            "arc_easy": {
+                                "acc,none": 0.80,
+                                "acc_stderr,none": 0.01,
+                                "acc_norm,none": 0.79,
+                            }
+                        }
+                    },
+                }
+            },
+        }
+
+        flat_metrics = main.collect_wandb_metrics(results)
+
+        self.assertEqual(
+            flat_metrics,
+            {
+                "perplexity/WikiText-2": 5.95,
+                "perplexity/C4": 9.29,
+                "lm_eval/arc_easy": 0.80,
+                "lm_eval/hellaswag": 0.59,
+                "lm_eval/lambada_openai": 0.73,
+            },
+        )
+
+    def test_log_results_to_wandb_uses_filtered_metrics_only(self):
+        args = SimpleNamespace(
+            wandb_project="smart-flip",
+            wandb_entity=None,
+            wandb_tags=[],
+            model_path="mistralai/Mistral-7B-v0.3",
+        )
+        results = {
+            "perplexity": {
+                "WikiText-2": {"float_model": {"perplexity": 4.96, "total_tokens": 288937}},
+                "C4": {"float_model": {"perplexity": 7.71, "total_tokens": 291381}},
+            },
+            "lm_eval": {
+                "float_model": {
+                    "summary": {
+                        "arc_easy": {"acc,none": 0.795, "acc_norm,none": 0.79},
+                        "hellaswag": {"acc,none": 0.604, "acc_norm,none": 0.804},
+                    }
+                }
+            },
+        }
+
+        fake_wandb = MagicMock()
+        fake_wandb.init.return_value = object()
+        fake_wandb.summary = {}
+
+        with patch.dict(sys.modules, {"wandb": fake_wandb}):
+            with patch("main.resolve_wandb_api_key", return_value=None):
+                with patch("main.build_metadata_config", return_value={}):
+                    with patch("main.build_wandb_tags", return_value=[]):
+                        main.log_results_to_wandb(
+                            args=args,
+                            run_name="demo",
+                            variant="float_model",
+                            model_paths={"float_model": "dummy-model"},
+                            results=results,
+                            model_slug="Meta-Llama-3p1-8B",
+                        )
+
+        fake_wandb.log.assert_called_once_with(
+            {
+                "perplexity/WikiText-2": 4.96,
+                "perplexity/C4": 7.71,
+                "lm_eval/arc_easy": 0.795,
+                "lm_eval/hellaswag": 0.604,
+            }
+        )
 
 if __name__ == "__main__":
     unittest.main()

@@ -53,7 +53,14 @@ class BashScriptTests(unittest.TestCase):
                 'bash scripts/bash/run_raw_quantize.sh',
                 'bash scripts/bash/run_flip_quantize.sh',
             ],
-            "run_qwen_grid.sh": [
+            "run_llama3_grid.sh": [
+                'MODEL_PATH="${MODEL_PATH:-meta-llama/Meta-Llama-3-8B}"',
+                'KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)',
+                'MAX_FLIP_VALUES=(0.01 0.02 0.03 0.04 0.05)',
+                'bash scripts/bash/run_float_model.sh',
+                'bash scripts/bash/run_raw_quantize.sh',
+                'bash scripts/bash/run_flip_quantize.sh',
+            ],            "run_qwen_grid.sh": [
                 'MODEL_PATH="${MODEL_PATH:-Qwen/Qwen2.5-7B}"',
                 'KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)',
                 'MAX_FLIP_VALUES=(0.01 0.02 0.03 0.04 0.05)',
