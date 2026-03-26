@@ -16,12 +16,21 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 class SlidingWindowEvaluator:
-    def __init__(self, device: str = "cuda", seed: int = 42, stride: int = 512, max_length: int = 2048, cache_dir: str = "./data/cache/eval"):
+    def __init__(
+        self,
+        device: str = "cuda",
+        seed: int = 42,
+        stride: int = 512,
+        max_length: int = 2048,
+        cache_dir: str = "./data/cache/eval",
+        hf_token: str | None = None,
+    ):
         self.device = device
         self.seed = seed
         self.stride = stride
         self.max_length = max_length
         self.cache_dir = Path(cache_dir)
+        self.hf_token = hf_token
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.results: Dict[str, dict] = {}
 
@@ -112,15 +121,11 @@ class SlidingWindowEvaluator:
 
     def evaluate_model_on_dataset(self, model_path: str, model_name: str, texts, dataset_name: str):
         print(f"\nEvaluating {model_name} on {dataset_name}...")
-        tokenizer_kwargs = {}
-        if "Llama-3" in model_path or "Mistral" in model_path:
-            tokenizer_kwargs["fix_mistral_regex"] = True
-
         tokenizer = AutoTokenizer.from_pretrained(
             model_path,
             trust_remote_code=True,
             use_fast=True,
-            **tokenizer_kwargs,
+            token=self.hf_token,
         )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -130,6 +135,7 @@ class SlidingWindowEvaluator:
             torch_dtype=torch.float16,
             device_map=self.device,
             trust_remote_code=True,
+            token=self.hf_token,
         )
         result = self.evaluate_sliding_window(model, tokenizer, texts)
         del model
@@ -156,5 +162,7 @@ class SlidingWindowEvaluator:
     def save_results(self, output_path: str):
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
-        with open(output, "w", encoding="utf-8") as handle:
+        temp_path = output.with_suffix(output.suffix + ".tmp")
+        with open(temp_path, "w", encoding="utf-8") as handle:
             json.dump(self.results, handle, indent=2)
+        temp_path.replace(output)

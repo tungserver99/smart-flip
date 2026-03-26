@@ -13,7 +13,7 @@ class RequirementsTests(unittest.TestCase):
             if line.strip() and not line.strip().startswith("#")
         }
 
-        required = {"numpy", "torch", "transformers", "datasets", "tqdm"}
+        required = {"numpy", "torch", "transformers", "datasets", "tqdm", "lm-eval", "wandb", "python-dotenv"}
         self.assertTrue(required.issubset(lines), f"Missing dependencies: {sorted(required - lines)}")
 
 

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -10,11 +12,116 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+DEFAULT_LM_EVAL_TASKS = {
+    "core": [
+        "arc_easy",
+        "arc_challenge",
+        "hellaswag",
+        "piqa",
+        "winogrande",
+    ],
+    "extended": [
+        "arc_easy",
+        "arc_challenge",
+        "hellaswag",
+        "piqa",
+        "winogrande",
+        "boolq",
+        "rte",
+        "openbookqa",
+        "lambada_openai",
+    ],
+}
+
 
 def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
+
+def load_runtime_env(env_path: str | Path = ".env"):
+    env_file = Path(env_path)
+    if not env_file.exists():
+        return
+
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(env_file, override=False)
+        return
+    except ImportError:
+        pass
+
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+def resolve_hf_token() -> str | None:
+    return (
+        os.getenv("HF_TOKEN")
+        or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        or os.getenv("HUGGINGFACE_TOKEN")
+    )
+
+
+def resolve_wandb_api_key() -> str | None:
+    return os.getenv("WANDB_API_KEY")
+
+
+def normalize_run_value(value) -> str:
+    text = f"{value:g}" if isinstance(value, float) else str(value)
+    return text.replace("-", "m").replace(".", "p").replace("/", "_")
+
+
+def build_model_slug(model_ref: str) -> str:
+    candidate = str(model_ref).rstrip("/\\").split("/")[-1].split("\\")[-1]
+    def replace_numeric_dot(match: re.Match[str]) -> str:
+        start = match.start()
+        if start > 0 and candidate[start - 1].lower() == "v":
+            return match.group(0)
+        return match.group(0).replace(".", "p")
+
+    candidate = re.sub(r"\d+\.\d+", replace_numeric_dot, candidate)
+    candidate = candidate.replace(" ", "_").replace("/", "_").replace("\\", "_")
+    return candidate
+
+
+def build_auto_run_name(variant: str, args, timestamp: str | None = None) -> str:
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    parts = [variant]
+    model_ref = getattr(args, "resolved_source_model", None) or getattr(args, "model_path", None)
+    if model_ref:
+        parts.append(build_model_slug(model_ref))
+    if hasattr(args, "bits"):
+        parts.append(f"b{args.bits}")
+    if hasattr(args, "group_size"):
+        parts.append(f"g{args.group_size}")
+    if variant.endswith("_flip"):
+        if hasattr(args, "knee_tolerance"):
+            parts.append(f"k{normalize_run_value(args.knee_tolerance)}")
+        if hasattr(args, "max_flip_percent"):
+            parts.append(f"f{normalize_run_value(args.max_flip_percent)}")
+    if hasattr(args, "seed"):
+        parts.append(f"s{args.seed}")
+    parts.append(timestamp)
+    return "_".join(parts)
+
+
+def resolve_run_name(args, variant: str) -> str:
+    existing = getattr(args, "resolved_run_name", None)
+    if existing:
+        return existing
+
+    run_name = args.run_name or build_auto_run_name(variant, args)
+    args.resolved_run_name = run_name
+    return run_name
 
 
 def build_output_dir(base_dir: str, variant: str, run_name: str | None) -> Path:
@@ -41,7 +148,7 @@ def resolve_model_reference(model_ref: str, models_root: str = "/models") -> str
     return model_ref
 
 
-def evaluate_model_paths(args, model_paths: dict[str, str]):
+def run_perplexity_evaluation(args, model_paths: dict[str, str]) -> dict:
     from src.smart_flip.evaluation.sliding_window import SlidingWindowEvaluator
 
     evaluator = SlidingWindowEvaluator(
@@ -50,12 +157,112 @@ def evaluate_model_paths(args, model_paths: dict[str, str]):
         stride=args.stride,
         max_length=args.max_length,
         cache_dir=args.eval_cache_dir,
+        hf_token=resolve_hf_token(),
     )
-    evaluator.run(model_paths, include_c4=args.include_c4, c4_samples=args.c4_samples)
+    return evaluator.run(model_paths, include_c4=args.include_c4, c4_samples=args.c4_samples)
 
-    run_name = args.run_name or datetime.now().strftime("%Y%m%d-%H%M%S")
+
+def run_lm_eval(args, model_paths: dict[str, str]) -> dict:
+    from src.smart_flip.evaluation.lm_eval import LMEvalHarnessRunner
+
+    runner = LMEvalHarnessRunner(
+        tasks=args.lm_eval_tasks,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        batch_size=args.lm_eval_batch_size,
+        num_fewshot=args.lm_eval_num_fewshot,
+        output_dir=args.lm_eval_output_dir,
+        run_name=getattr(args, "resolved_run_name", args.run_name),
+        hf_token=resolve_hf_token(),
+    )
+    return runner.run(model_paths)
+
+
+def save_evaluation_results(results: dict, output_path: Path):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(results, handle, indent=2)
+    temp_path.replace(output_path)
+
+
+def flatten_numeric_metrics(prefix: str, payload, flat: dict[str, float]):
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            child_prefix = f"{prefix}/{key}" if prefix else str(key)
+            flatten_numeric_metrics(child_prefix, value, flat)
+    elif isinstance(payload, (int, float)) and not isinstance(payload, bool):
+        flat[prefix] = payload
+
+
+def build_wandb_tags(args, variant: str, model_slug: str) -> list[str]:
+    tags = list(getattr(args, "wandb_tags", []))
+    auto_tags = [
+        f"model:{model_slug}",
+        f"variant:{variant}",
+    ]
+    origin_method = getattr(args, "origin_method", None)
+    if origin_method:
+        auto_tags.append(f"origin:{origin_method}")
+    post_correction = getattr(args, "post_correction", None)
+    if post_correction:
+        auto_tags.append(f"correction:{post_correction}")
+
+    for tag in auto_tags:
+        if tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def log_results_to_wandb(args, run_name: str, variant: str, model_paths: dict[str, str], results: dict, model_slug: str):
+    try:
+        import wandb
+    except ImportError:
+        print("\nWarning: wandb is not installed. Install 'wandb' or disable logging with --no-wandb.")
+        return
+
+    api_key = resolve_wandb_api_key()
+    if api_key:
+        wandb.login(key=api_key, relogin=True)
+
+    run = wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=run_name,
+        job_type=variant,
+        tags=build_wandb_tags(args, variant, model_slug),
+        config=build_metadata_config(args),
+        reinit=True,
+    )
+    if run is None:
+        return
+
+    flat_metrics: dict[str, float] = {}
+    flatten_numeric_metrics("", results, flat_metrics)
+    if flat_metrics:
+        wandb.log(flat_metrics)
+
+    wandb.summary["variant"] = variant
+    wandb.summary["model_slug"] = model_slug
+    wandb.summary["model_paths"] = model_paths
+    wandb.summary["source_model"] = getattr(args, "model_path", None)
+    wandb.finish()
+
+
+def evaluate_model_paths(args, model_paths: dict[str, str], variant: str = "evaluation"):
+    run_name = resolve_run_name(args, variant)
+    model_ref = getattr(args, "resolved_source_model", None) or getattr(args, "model_path", None) or next(iter(model_paths.values()))
+    model_slug = build_model_slug(model_ref)
+    combined_results = {
+        "perplexity": run_perplexity_evaluation(args, model_paths),
+    }
+
+    if args.include_lm_eval:
+        combined_results["lm_eval"] = run_lm_eval(args, model_paths)
+
     output_path = Path(args.results_eval_dir) / f"{run_name}.json"
-    evaluator.save_results(output_path)
+    save_evaluation_results(combined_results, output_path)
+    if getattr(args, "use_wandb", False):
+        log_results_to_wandb(args, run_name, variant, model_paths, combined_results, model_slug)
     print(f"\nSaved evaluation results to {output_path}")
     return output_path
 
@@ -68,8 +275,10 @@ def run_quantize(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     resolved_model = resolve_model_reference(args.model_path, models_root=args.models_root)
+    args.resolved_source_model = resolved_model
+    hf_token = resolve_hf_token()
 
-    tokenizer = AutoTokenizer.from_pretrained(resolved_model, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(resolved_model, trust_remote_code=True, token=hf_token)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -78,6 +287,7 @@ def run_quantize(args):
         torch_dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
+        token=hf_token,
     )
     model.eval()
 
@@ -103,7 +313,8 @@ def run_quantize(args):
     )
     quantizer.quantize_model_sequential(calibration_data, n_samples=args.n_calib)
 
-    output_dir = build_output_dir(args.results_models_dir, recipe.variant_name, args.run_name)
+    run_name = resolve_run_name(args, recipe.variant_name)
+    output_dir = build_output_dir(args.results_models_dir, recipe.variant_name, run_name)
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
 
@@ -129,17 +340,18 @@ def run_float_model(args):
     evaluate_model_paths(
         args,
         {"float_model": resolve_model_reference(args.model_path, models_root=args.models_root)},
+        variant="float_model",
     )
 
 
 def run_raw_quantize(args):
     output_dir = run_quantize(args)
-    evaluate_model_paths(args, {"raw_quantize": str(output_dir)})
+    evaluate_model_paths(args, {"raw_quantize": str(output_dir)}, variant="awq_raw")
 
 
 def run_flip_quantize(args):
     output_dir = run_quantize(args)
-    evaluate_model_paths(args, {"flip_quantize": str(output_dir)})
+    evaluate_model_paths(args, {"flip_quantize": str(output_dir)}, variant="awq_flip")
 
 
 def run_compare_all(args):
@@ -148,7 +360,7 @@ def run_compare_all(args):
         "raw_quantize": resolve_model_reference(args.raw_path, models_root=args.models_root),
         "flip_quantize": resolve_model_reference(args.flip_path, models_root=args.models_root),
     }
-    evaluate_model_paths(args, model_paths)
+    evaluate_model_paths(args, model_paths, variant="compare_all")
 
 
 def build_parser():
@@ -166,6 +378,18 @@ def build_parser():
         cmd.add_argument("--include-c4", action="store_true", default=True)
         cmd.add_argument("--no-c4", dest="include_c4", action="store_false")
         cmd.add_argument("--c4-samples", type=int, default=500)
+        cmd.add_argument("--include-lm-eval", action="store_true", default=True)
+        cmd.add_argument("--no-lm-eval", dest="include_lm_eval", action="store_false")
+        cmd.add_argument("--lm-eval-task-preset", choices=sorted(DEFAULT_LM_EVAL_TASKS), default="extended")
+        cmd.add_argument("--lm-eval-tasks", nargs="+", default=list(DEFAULT_LM_EVAL_TASKS["extended"]))
+        cmd.add_argument("--lm-eval-num-fewshot", type=int, default=None)
+        cmd.add_argument("--lm-eval-batch-size", default="auto")
+        cmd.add_argument("--lm-eval-output-dir", default="./results/eval/lm_eval")
+        cmd.add_argument("--use-wandb", action="store_true", default=False)
+        cmd.add_argument("--no-wandb", dest="use_wandb", action="store_false")
+        cmd.add_argument("--wandb-project", default="smartflip")
+        cmd.add_argument("--wandb-entity", default=None)
+        cmd.add_argument("--wandb-tags", nargs="*", default=[])
 
     def add_quant_args(cmd):
         cmd.add_argument("--model-path", required=True, help="HF model name or local model path")
@@ -211,8 +435,11 @@ def build_parser():
 
 
 def main():
+    load_runtime_env()
     parser = build_parser()
     args = parser.parse_args()
+    if args.lm_eval_tasks == list(DEFAULT_LM_EVAL_TASKS["extended"]) and args.lm_eval_task_preset in DEFAULT_LM_EVAL_TASKS:
+        args.lm_eval_tasks = list(DEFAULT_LM_EVAL_TASKS[args.lm_eval_task_preset])
     args.func(args)
 
 

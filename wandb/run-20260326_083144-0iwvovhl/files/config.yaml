@@ -1,0 +1,136 @@
+_wandb:
+    value:
+        cli_version: 0.25.1
+        e:
+            sx7sik7a8ojnn9p1alij8evc9veuiupd:
+                args:
+                    - float_model
+                    - --model-path
+                    - meta-llama/Meta-Llama-3.1-8B
+                    - --models-root
+                    - /models
+                    - --lm-eval-task-preset
+                    - extended
+                    - --use-wandb
+                    - --wandb-project
+                    - smartflip
+                codePath: main.py
+                codePathLocal: main.py
+                cpu_count: 6
+                cpu_count_logical: 12
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "253055008768"
+                        used: "63265087488"
+                email: tunga99937@gmail.com
+                executable: /usr/bin/python3
+                git:
+                    commit: ef44e3f6dd9cc5b7ef4d799657b40fc28e0add5e
+                    remote: https://github.com/tungserver99/smart-flip.git
+                gpu: NVIDIA A100-SXM4-40GB
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "42949672960"
+                      name: NVIDIA A100-SXM4-40GB
+                      uuid: GPU-b6e6f912-ae56-5219-9154-9b5098097dee
+                host: 3b657cd01b25
+                memory:
+                    total: "89629200384"
+                os: Linux-6.6.113+-x86_64-with-glibc2.35
+                program: /content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/Quantization/smart-flip/main.py
+                python: CPython 3.12.13
+                root: /content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/Quantization/smart-flip
+                startedAt: "2026-03-26T08:31:44.219293Z"
+                writerId: sx7sik7a8ojnn9p1alij8evc9veuiupd
+        m: []
+        python_version: 3.12.13
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 51
+                - 53
+                - 71
+                - 105
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 51
+                - 53
+                - 71
+                - 105
+            "3":
+                - 2
+                - 13
+                - 15
+                - 16
+                - 62
+            "4": 3.12.13
+            "5": 0.25.1
+            "6": 5.0.0
+            "10":
+                - 20
+            "12": 0.25.1
+            "13": linux-x86_64
+c4_samples:
+    value: 500
+eval_cache_dir:
+    value: ./data/cache/eval
+include_c4:
+    value: true
+include_lm_eval:
+    value: true
+lm_eval_batch_size:
+    value: auto
+lm_eval_num_fewshot:
+    value: null
+lm_eval_output_dir:
+    value: ./results/eval/lm_eval
+lm_eval_task_preset:
+    value: extended
+lm_eval_tasks:
+    value:
+        - arc_easy
+        - arc_challenge
+        - hellaswag
+        - piqa
+        - winogrande
+        - boolq
+        - rte
+        - openbookqa
+        - lambada_openai
+max_length:
+    value: 2048
+mode:
+    value: float_model
+model_path:
+    value: meta-llama/Meta-Llama-3.1-8B
+models_root:
+    value: /models
+resolved_run_name:
+    value: float_model_Meta-Llama-3p1-8B_s42_20260326-081533
+results_eval_dir:
+    value: ./results/eval
+run_name:
+    value: null
+seed:
+    value: 42
+stride:
+    value: 512
+use_wandb:
+    value: true
+wandb_entity:
+    value: null
+wandb_project:
+    value: smartflip
+wandb_tags:
+    value: []
