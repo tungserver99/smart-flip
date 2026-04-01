@@ -10,6 +10,7 @@ class ParserModeTests(unittest.TestCase):
         parser = main.build_parser()
         mode_args = {
             "float_model": ["float_model", "--model-path", "dummy-model"],
+            "quantize": ["quantize", "--model-path", "dummy-model"],
             "raw_quantize": ["raw_quantize", "--model-path", "dummy-model"],
             "flip_quantize": ["flip_quantize", "--model-path", "dummy-model"],
             "compare_all": [
@@ -26,6 +27,20 @@ class ParserModeTests(unittest.TestCase):
         for mode, argv in mode_args.items():
             args = parser.parse_args(argv)
             self.assertEqual(args.mode, mode)
+
+    def test_quantize_mode_accepts_post_correction_parameter(self):
+        parser = main.build_parser()
+
+        args = parser.parse_args([
+            "quantize",
+            "--model-path",
+            "dummy-model",
+            "--post-correction",
+            "bias_correction",
+        ])
+
+        self.assertEqual(args.origin_method, "awq")
+        self.assertEqual(args.post_correction, "bias_correction")
 
     def test_quantize_modes_set_origin_and_post_correction_defaults(self):
         parser = main.build_parser()
@@ -167,8 +182,6 @@ class ParserModeTests(unittest.TestCase):
         run_ppl.assert_called_once_with(args, model_paths)
         run_lm_eval.assert_not_called()
 
-
-
     def test_run_raw_quantize_evaluates_then_deletes_temporary_model_dir(self):
         args = SimpleNamespace()
         output_dir = main.Path('./results/models/.tmp/raw-run')
@@ -194,6 +207,7 @@ class ParserModeTests(unittest.TestCase):
 
         run_quantize.assert_called_once_with(args)
         rmtree.assert_called_once_with(output_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

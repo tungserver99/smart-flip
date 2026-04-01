@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.smart_flip.post_correction.smart_flip import SmartFlipConfig, SmartFlipCorrection
-from src.smart_flip.quantization.awq import AWQConfig, AWQQuantizerXL
+from src.post_correction.bias_correction import BiasCorrectionConfig, BiasCorrectionCorrection
+from src.post_correction.smart_flip import SmartFlipConfig, SmartFlipCorrection
+from src.quantization.awq import AWQConfig, AWQQuantizerXL
+from src.quantization.awq_bias_correction import AWQBiasCorrectionQuantizerXL
 
 
 @dataclass(frozen=True)
@@ -15,9 +17,9 @@ class QuantizationRecipe:
 
     @property
     def variant_name(self) -> str:
-        if self.post_correction == "smart_flip":
-            return f"{self.origin_method}_flip"
-        return f"{self.origin_method}_raw"
+        if self.post_correction == "none":
+            return f"{self.origin_method}_raw"
+        return f"{self.origin_method}_{self.post_correction}"
 
 
 def build_awq_config(args) -> AWQConfig:
@@ -42,6 +44,12 @@ def build_post_correction(args, recipe: QuantizationRecipe):
                 use_james_stein=args.use_james_stein,
             )
         )
+    if recipe.post_correction == "bias_correction":
+        return BiasCorrectionCorrection(
+            BiasCorrectionConfig(
+                max_samples=args.bias_correction_samples,
+            )
+        )
     raise NotImplementedError(f"Unsupported post correction: {recipe.post_correction}")
 
 
@@ -50,13 +58,22 @@ def create_quantizer(model, tokenizer, device: str, args, recipe: QuantizationRe
 
     if recipe.origin_method == "awq":
         config = build_awq_config(args)
-        quantizer = AWQQuantizerXL(
-            model=model,
-            tokenizer=tokenizer,
-            device=device,
-            config=config,
-            post_correction=correction,
-        )
+        if recipe.post_correction == "bias_correction":
+            quantizer = AWQBiasCorrectionQuantizerXL(
+                model=model,
+                tokenizer=tokenizer,
+                device=device,
+                config=config,
+                post_correction=correction,
+            )
+        else:
+            quantizer = AWQQuantizerXL(
+                model=model,
+                tokenizer=tokenizer,
+                device=device,
+                config=config,
+                post_correction=correction,
+            )
         return quantizer, config, correction
 
     raise NotImplementedError(f"Unsupported origin method: {recipe.origin_method}")

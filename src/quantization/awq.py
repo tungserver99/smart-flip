@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from src.smart_flip.quantization.state import IntegerQuantizedTensorState
+from src.quantization.state import IntegerQuantizedTensorState
 
 try:
     import psutil
@@ -18,7 +18,7 @@ except ImportError:
     HAS_PSUTIL = False
 
 if TYPE_CHECKING:
-    from src.smart_flip.post_correction.smart_flip import SmartFlipCorrection
+    from src.post_correction.smart_flip import SmartFlipCorrection
 
 
 @dataclass
@@ -412,3 +412,4 @@ class AWQQuantizerXL:
         print("Quantization Complete")
         print(f"  Total layers quantized: {quantized_count}/{num_layers}")
         print("=" * 80)
+

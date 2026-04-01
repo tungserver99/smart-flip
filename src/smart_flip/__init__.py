@@ -1,1 +1,0 @@
-"""Smart Flip AWQ project package."""

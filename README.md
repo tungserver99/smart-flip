@@ -161,3 +161,4 @@ So on your server they will use `/models/Mistral-7B-v0.3` automatically unless y
 - AWQ alpha search is intentionally fixed to run on raw AWQ, not on the flipped variant.
 - Flip behavior is controlled by dedicated arguments such as `--knee-tolerance` and `--max-flip-percent`.
 - Old scripts are archived in `legacy/` for comparison and recovery.
+

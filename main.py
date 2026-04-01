@@ -104,7 +104,7 @@ def build_auto_run_name(variant: str, args, timestamp: str | None = None) -> str
         parts.append(f"b{args.bits}")
     if hasattr(args, "group_size"):
         parts.append(f"g{args.group_size}")
-    if variant.endswith("_flip"):
+    if variant.endswith("_flip") or "smart_flip" in variant:
         if hasattr(args, "knee_tolerance"):
             parts.append(f"k{normalize_run_value(args.knee_tolerance)}")
         if hasattr(args, "max_flip_percent"):
@@ -150,7 +150,7 @@ def resolve_model_reference(model_ref: str, models_root: str = "/models") -> str
 
 
 def run_perplexity_evaluation(args, model_paths: dict[str, str]) -> dict:
-    from src.smart_flip.evaluation.sliding_window import SlidingWindowEvaluator
+    from src.evaluation.sliding_window import SlidingWindowEvaluator
 
     evaluator = SlidingWindowEvaluator(
         device="cuda" if torch.cuda.is_available() else "cpu",
@@ -164,7 +164,7 @@ def run_perplexity_evaluation(args, model_paths: dict[str, str]) -> dict:
 
 
 def run_lm_eval(args, model_paths: dict[str, str]) -> dict:
-    from src.smart_flip.evaluation.lm_eval import LMEvalHarnessRunner
+    from src.evaluation.lm_eval import LMEvalHarnessRunner
 
     runner = LMEvalHarnessRunner(
         tasks=args.lm_eval_tasks,
@@ -304,8 +304,8 @@ def evaluate_model_paths(args, model_paths: dict[str, str], variant: str = "eval
 
 
 def run_quantize(args):
-    from src.smart_flip.calibration import load_calibration_data
-    from src.smart_flip.quantization.pipeline import QuantizationRecipe, create_quantizer
+    from src.calibration import load_calibration_data
+    from src.quantization.pipeline import QuantizationRecipe, create_quantizer
 
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -380,21 +380,38 @@ def run_float_model(args):
     )
 
 
-def run_raw_quantize(args):
+def build_quantized_model_key(post_correction: str) -> str:
+    if post_correction == "none":
+        return "raw_quantize"
+    return f"{post_correction}_quantize"
+
+
+def run_quantize_with_evaluation(args):
+    from src.quantization.pipeline import QuantizationRecipe
+
+    recipe = QuantizationRecipe(
+        origin_method=getattr(args, "origin_method", "awq"),
+        post_correction=getattr(args, "post_correction", "none"),
+    )
     output_dir = run_quantize(args)
     try:
-        evaluate_model_paths(args, {"raw_quantize": str(output_dir)}, variant="awq_raw")
+        evaluate_model_paths(
+            args,
+            {build_quantized_model_key(recipe.post_correction): str(output_dir)},
+            variant=recipe.variant_name,
+        )
     finally:
         shutil.rmtree(output_dir, ignore_errors=True)
+
+
+def run_raw_quantize(args):
+    args.post_correction = "none"
+    run_quantize_with_evaluation(args)
 
 
 def run_flip_quantize(args):
-    output_dir = run_quantize(args)
-    try:
-        evaluate_model_paths(args, {"flip_quantize": str(output_dir)}, variant="awq_flip")
-    finally:
-        shutil.rmtree(output_dir, ignore_errors=True)
-
+    args.post_correction = "smart_flip"
+    run_quantize_with_evaluation(args)
 
 def run_compare_all(args):
     model_paths = {
@@ -451,12 +468,18 @@ def build_parser():
         cmd.add_argument("--no-james-stein", dest="use_james_stein", action="store_false")
         cmd.add_argument("--knee-tolerance", type=float, default=0.0)
         cmd.add_argument("--max-flip-percent", type=float, default=0.05)
+        cmd.add_argument("--bias-correction-samples", type=int, default=4096)
         add_eval_args(cmd)
 
     float_model = subparsers.add_parser("float_model", help="Evaluate the original float model only")
     float_model.add_argument("--model-path", required=True, help="HF model name or local model path")
     add_eval_args(float_model)
     float_model.set_defaults(func=run_float_model)
+
+    quantize = subparsers.add_parser("quantize", help="Quantize with AWQ and an optional post-correction, then evaluate that model")
+    add_quant_args(quantize)
+    quantize.add_argument("--post-correction", choices=["none", "smart_flip", "bias_correction"], default="none")
+    quantize.set_defaults(func=run_quantize_with_evaluation)
 
     raw_quantize = subparsers.add_parser("raw_quantize", help="Quantize with raw AWQ, then evaluate that model")
     add_quant_args(raw_quantize)
@@ -487,3 +510,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

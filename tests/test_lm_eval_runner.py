@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
-from src.smart_flip.evaluation.lm_eval import LMEvalHarnessRunner
+from src.evaluation.lm_eval import LMEvalHarnessRunner
 
 
 class LMEvalSerializationTests(unittest.TestCase):
@@ -44,3 +44,4 @@ class LMEvalSerializationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

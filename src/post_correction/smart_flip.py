@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 import torch
 
-from src.smart_flip.quantization.state import IntegerQuantizedTensorState
+from src.quantization.state import IntegerQuantizedTensorState
 
 
 def find_knee_point(values, tolerance_offset: float = 0.0) -> int:
@@ -192,3 +192,4 @@ class SmartFlipCorrection:
             }
 
         return quant_state.dequantize_truncated(), outlier_percent, flip_stats
+
