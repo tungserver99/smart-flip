@@ -13,6 +13,8 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from src.io_utils import dump_json
+
 DEFAULT_LM_EVAL_TASKS = {
     "core": [
         "arc_easy",
@@ -134,7 +136,11 @@ def build_output_dir(base_dir: str, variant: str, run_name: str | None) -> Path:
 
 
 def build_metadata_config(args) -> dict:
-    return {key: value for key, value in vars(args).items() if not callable(value)}
+    return {
+        key: value
+        for key, value in vars(args).items()
+        if not key.startswith("_") and not callable(value)
+    }
 
 
 def resolve_model_reference(model_ref: str, models_root: str = "/models") -> str:
@@ -179,11 +185,7 @@ def run_lm_eval(args, model_paths: dict[str, str]) -> dict:
 
 
 def save_evaluation_results(results: dict, output_path: Path):
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    with open(temp_path, "w", encoding="utf-8") as handle:
-        json.dump(results, handle, indent=2)
-    temp_path.replace(output_path)
+    dump_json(output_path, results, indent=2)
 
 
 def flatten_numeric_metrics(prefix: str, payload, flat: dict[str, float]):
@@ -312,6 +314,13 @@ def run_quantize(args):
 
     resolved_model = resolve_model_reference(args.model_path, models_root=args.models_root)
     args.resolved_source_model = resolved_model
+    recipe = QuantizationRecipe(
+        origin_method=args.origin_method,
+        post_correction=args.post_correction,
+    )
+    run_name = resolve_run_name(args, recipe.variant_name)
+    output_dir = build_output_dir(args.results_models_dir, recipe.variant_name, run_name)
+    flatquant_raw_path = resolve_flatquant_raw_path(args, recipe)
     hf_token = resolve_hf_token()
 
     tokenizer = AutoTokenizer.from_pretrained(resolved_model, trust_remote_code=True, token=hf_token)
@@ -336,10 +345,6 @@ def run_quantize(args):
         cache_dir=args.calibration_cache_dir,
     )
 
-    recipe = QuantizationRecipe(
-        origin_method=args.origin_method,
-        post_correction=args.post_correction,
-    )
     quantizer, base_config, correction = create_quantizer(
         model=model,
         tokenizer=tokenizer,
@@ -347,10 +352,18 @@ def run_quantize(args):
         args=args,
         recipe=recipe,
     )
-    quantizer.quantize_model_sequential(calibration_data, n_samples=args.n_calib)
+    if recipe.origin_method == "flatquant":
+        quantizer.set_artifact_dir(output_dir)
+        quantizer.quantize_model_sequential(
+            calibration_data,
+            n_samples=args.n_calib,
+            reuse_flat_parameters_path=flatquant_raw_path,
+        )
+    else:
+        quantizer.quantize_model_sequential(calibration_data, n_samples=args.n_calib)
+    if recipe.origin_method == "flatquant":
+        args._evaluation_model_spec = quantizer.build_evaluation_target()
 
-    run_name = resolve_run_name(args, recipe.variant_name)
-    output_dir = build_output_dir(args.results_models_dir, recipe.variant_name, run_name)
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
 
@@ -360,6 +373,7 @@ def run_quantize(args):
         "post_correction": recipe.post_correction,
         "source_model": args.model_path,
         "resolved_source_model": resolved_model,
+        "flatquant_raw_path": flatquant_raw_path,
         "config": build_metadata_config(args),
         "base_config": base_config.__dict__,
         "post_correction_config": correction.config.__dict__ if correction is not None else None,
@@ -371,7 +385,6 @@ def run_quantize(args):
     print(f"\nSaved {recipe.variant_name} model to {output_dir}")
     return output_dir
 
-
 def run_float_model(args):
     evaluate_model_paths(
         args,
@@ -379,6 +392,15 @@ def run_float_model(args):
         variant="float_model",
     )
 
+
+def should_preserve_quantized_output(recipe) -> bool:
+    return recipe.origin_method == "flatquant" and recipe.post_correction == "none"
+
+
+def resolve_flatquant_raw_path(args, recipe):
+    if recipe.origin_method != "flatquant" or recipe.post_correction == "none":
+        return None
+    return getattr(args, "flatquant_raw_path", None)
 
 def build_quantized_model_key(post_correction: str) -> str:
     if post_correction == "none":
@@ -394,14 +416,18 @@ def run_quantize_with_evaluation(args):
         post_correction=getattr(args, "post_correction", "none"),
     )
     output_dir = run_quantize(args)
+    evaluation_target = getattr(args, "_evaluation_model_spec", None) or str(output_dir)
     try:
         evaluate_model_paths(
             args,
-            {build_quantized_model_key(recipe.post_correction): str(output_dir)},
+            {build_quantized_model_key(recipe.post_correction): evaluation_target},
             variant=recipe.variant_name,
         )
     finally:
-        shutil.rmtree(output_dir, ignore_errors=True)
+        if not should_preserve_quantized_output(recipe):
+            shutil.rmtree(output_dir, ignore_errors=True)
+        if hasattr(args, "_evaluation_model_spec"):
+            delattr(args, "_evaluation_model_spec")
 
 
 def run_raw_quantize(args):
@@ -452,7 +478,7 @@ def build_parser():
 
     def add_quant_args(cmd):
         cmd.add_argument("--model-path", required=True, help="HF model name or local model path")
-        cmd.add_argument("--origin-method", choices=["awq"], default="awq")
+        cmd.add_argument("--origin-method", choices=["awq", "flatquant"], default="awq")
         cmd.add_argument("--results-models-dir", default="./results/models")
         cmd.add_argument("--calibration-cache-dir", default="./data/cache/calibration")
         cmd.add_argument("--calib-dataset", choices=["c4", "wikitext2", "wikitext2-simple"], default="c4")
@@ -469,6 +495,19 @@ def build_parser():
         cmd.add_argument("--knee-tolerance", type=float, default=0.0)
         cmd.add_argument("--max-flip-percent", type=float, default=0.05)
         cmd.add_argument("--bias-correction-samples", type=int, default=4096)
+        cmd.add_argument("--flatquant-epochs", type=int, default=15)
+        cmd.add_argument("--flatquant-cali-bsz", type=int, default=4)
+        cmd.add_argument("--flatquant-lr", type=float, default=5e-3)
+        cmd.add_argument("--flatquant-cali-trans", action="store_true", default=True)
+        cmd.add_argument("--no-flatquant-cali-trans", dest="flatquant_cali_trans", action="store_false")
+        cmd.add_argument("--flatquant-add-diag", action="store_true", default=True)
+        cmd.add_argument("--no-flatquant-add-diag", dest="flatquant_add_diag", action="store_false")
+        cmd.add_argument("--flatquant-lwc", action="store_true", default=True)
+        cmd.add_argument("--no-flatquant-lwc", dest="flatquant_lwc", action="store_false")
+        cmd.add_argument("--flatquant-lac", action="store_true", default=True)
+        cmd.add_argument("--no-flatquant-lac", dest="flatquant_lac", action="store_false")
+        cmd.add_argument("--flatquant-diag-init", choices=["sq_style", "one_style"], default="sq_style")
+        cmd.add_argument("--flatquant-diag-alpha", type=float, default=0.3)
         add_eval_args(cmd)
 
     float_model = subparsers.add_parser("float_model", help="Evaluate the original float model only")
@@ -479,14 +518,17 @@ def build_parser():
     quantize = subparsers.add_parser("quantize", help="Quantize with AWQ and an optional post-correction, then evaluate that model")
     add_quant_args(quantize)
     quantize.add_argument("--post-correction", choices=["none", "smart_flip", "bias_correction"], default="none")
+    quantize.add_argument("--flatquant-raw-path", default=None)
     quantize.set_defaults(func=run_quantize_with_evaluation)
 
     raw_quantize = subparsers.add_parser("raw_quantize", help="Quantize with raw AWQ, then evaluate that model")
     add_quant_args(raw_quantize)
+    raw_quantize.add_argument("--flatquant-raw-path", default=None)
     raw_quantize.set_defaults(func=run_raw_quantize, post_correction="none")
 
     flip_quantize = subparsers.add_parser("flip_quantize", help="Quantize with AWQ plus smart flip, then evaluate that model")
     add_quant_args(flip_quantize)
+    flip_quantize.add_argument("--flatquant-raw-path", default=None)
     flip_quantize.set_defaults(func=run_flip_quantize, post_correction="smart_flip")
 
     compare_all = subparsers.add_parser("compare_all", help="Evaluate float_model, raw_quantize, and flip_quantize together")
@@ -510,5 +552,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

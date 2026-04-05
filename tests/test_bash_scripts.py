@@ -3,124 +3,103 @@ from pathlib import Path
 
 
 class BashScriptTests(unittest.TestCase):
-    def test_root_bash_wrappers_expose_current_eval_flags(self):
-        scripts = {
-            "run_float_model.sh": [
-                'LM_EVAL_TASK_PRESET="${LM_EVAL_TASK_PRESET:-extended}"',
-                'INCLUDE_LM_EVAL="${INCLUDE_LM_EVAL:-1}"',
-                'INCLUDE_C4="${INCLUDE_C4:-1}"',
-                'USE_WANDB="${USE_WANDB:-1}"',
-                'WANDB_PROJECT="${WANDB_PROJECT:-smartflip}"',
-                '--lm-eval-task-preset "$LM_EVAL_TASK_PRESET"',
-                'EXTRA_ARGS+=(--no-lm-eval)',
-                'EXTRA_ARGS+=(--no-c4)',
-                'EXTRA_ARGS+=(--use-wandb --wandb-project "$WANDB_PROJECT")',
-            ],
-            "run_quantize.sh": [
-                'POST_CORRECTION="${POST_CORRECTION:-none}"',
-                '--post-correction "$POST_CORRECTION"',
-                '--bias-correction-samples "$BIAS_CORRECTION_SAMPLES"',
-            ],
-            "run_raw_quantize.sh": [
-                'LM_EVAL_TASK_PRESET="${LM_EVAL_TASK_PRESET:-extended}"',
-                'INCLUDE_LM_EVAL="${INCLUDE_LM_EVAL:-1}"',
-                'INCLUDE_C4="${INCLUDE_C4:-1}"',
-                'USE_WANDB="${USE_WANDB:-1}"',
-                'WANDB_PROJECT="${WANDB_PROJECT:-smartflip}"',
-                '--lm-eval-task-preset "$LM_EVAL_TASK_PRESET"',
-                'EXTRA_ARGS+=(--use-wandb --wandb-project "$WANDB_PROJECT")',
-            ],
-            "run_flip_quantize.sh": [
-                'LM_EVAL_TASK_PRESET="${LM_EVAL_TASK_PRESET:-extended}"',
-                'INCLUDE_LM_EVAL="${INCLUDE_LM_EVAL:-1}"',
-                'INCLUDE_C4="${INCLUDE_C4:-1}"',
-                'USE_WANDB="${USE_WANDB:-1}"',
-                'WANDB_PROJECT="${WANDB_PROJECT:-smartflip}"',
-                'KNEE_TOLERANCE="${KNEE_TOLERANCE:-0.0}"',
-                'MAX_FLIP_PERCENT="${MAX_FLIP_PERCENT:-0.05}"',
-                '--knee-tolerance "$KNEE_TOLERANCE"',
-                '--max-flip-percent "$MAX_FLIP_PERCENT"',
-                'EXTRA_ARGS+=(--use-wandb --wandb-project "$WANDB_PROJECT")',
-            ],
+    def test_bash_scripts_follow_new_correction_origin_layout(self):
+        base = Path("scripts/bash")
+        expected = {
+            Path("smart_flip/awq/run_llama3.sh"),
+            Path("smart_flip/awq/run_llama31.sh"),
+            Path("smart_flip/awq/run_mistral.sh"),
+            Path("smart_flip/awq/run_qwen25.sh"),
+            Path("smart_flip/flatquant/run_llama3.sh"),
+            Path("smart_flip/flatquant/run_llama31.sh"),
+            Path("smart_flip/flatquant/run_mistral.sh"),
+            Path("smart_flip/flatquant/run_qwen25.sh"),
+            Path("bias_correction/awq/run_llama3.sh"),
+            Path("bias_correction/awq/run_llama31.sh"),
+            Path("bias_correction/awq/run_mistral.sh"),
+            Path("bias_correction/awq/run_qwen25.sh"),
+            Path("bias_correction/flatquant/run_llama3.sh"),
+            Path("bias_correction/flatquant/run_llama31.sh"),
+            Path("bias_correction/flatquant/run_mistral.sh"),
+            Path("bias_correction/flatquant/run_qwen25.sh"),
         }
 
-        for script_name, snippets in scripts.items():
-            content = Path("scripts/bash", script_name).read_text(encoding="utf-8")
-            for snippet in snippets:
-                self.assertIn(snippet, content, f"Missing '{snippet}' in {script_name}")
+        actual = {path.relative_to(base) for path in base.rglob("*.sh")}
+        self.assertEqual(actual, expected)
 
-    def test_grouped_model_launchers_cover_smart_flip_and_bias_correction(self):
+    def test_smart_flip_scripts_define_grid_search_per_origin_method(self):
         scripts = {
-            "smart_flip/run_llama3_grid.sh": [
-                'MODEL_PATH="${MODEL_PATH:-meta-llama/Meta-Llama-3-8B}"',
+            "smart_flip/awq/run_llama3.sh": [
+                'FLOAT_ARGS=(',
+                'QUANT_BASE_ARGS=(',
+                'ORIGIN_METHOD="awq"',
+                'POST_CORRECTION="smart_flip"',
                 'KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)',
                 'MAX_FLIP_VALUES=(0.01 0.02 0.03 0.04 0.05)',
-                'bash scripts/bash/run_float_model.sh',
-                'bash scripts/bash/run_raw_quantize.sh',
-                'bash scripts/bash/run_flip_quantize.sh',
+                'for knee in "${KNEE_VALUES[@]}"; do',
+                'for max_flip in "${MAX_FLIP_VALUES[@]}"; do',
+                'main.py float_model',
+                'main.py quantize',
+                '--origin-method "$ORIGIN_METHOD"',
+                '--post-correction "$POST_CORRECTION"',
             ],
-            "smart_flip/run_llama31_grid.sh": [
-                'MODEL_PATH="${MODEL_PATH:-meta-llama/Meta-Llama-3.1-8B}"',
+            "smart_flip/flatquant/run_llama3.sh": [
+                'FLOAT_ARGS=(',
+                'QUANT_BASE_ARGS=(',
+                'ORIGIN_METHOD="flatquant"',
+                'POST_CORRECTION="smart_flip"',
+                'BITS_VALUES=(4)',
                 'KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)',
                 'MAX_FLIP_VALUES=(0.01 0.02 0.03 0.04 0.05)',
-                'bash scripts/bash/run_float_model.sh',
-                'bash scripts/bash/run_raw_quantize.sh',
-                'bash scripts/bash/run_flip_quantize.sh',
-            ],
-            "smart_flip/run_mistral_grid.sh": [
-                'MODEL_PATH="${MODEL_PATH:-mistralai/Mistral-7B-v0.3}"',
-                'KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)',
-                'MAX_FLIP_VALUES=(0.01 0.02 0.03 0.04 0.05)',
-                'bash scripts/bash/run_float_model.sh',
-                'bash scripts/bash/run_raw_quantize.sh',
-                'bash scripts/bash/run_flip_quantize.sh',
-            ],
-            "smart_flip/run_qwen25_grid.sh": [
-                'MODEL_PATH="${MODEL_PATH:-Qwen/Qwen2.5-7B}"',
-                'KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)',
-                'MAX_FLIP_VALUES=(0.01 0.02 0.03 0.04 0.05)',
-                'bash scripts/bash/run_float_model.sh',
-                'bash scripts/bash/run_raw_quantize.sh',
-                'bash scripts/bash/run_flip_quantize.sh',
-            ],
-            "bias_correction/run_llama3.sh": [
-                'MODEL_PATH="${MODEL_PATH:-meta-llama/Meta-Llama-3-8B}"',
-                'POST_CORRECTION="${POST_CORRECTION:-bias_correction}"',
-                'BIAS_CORRECTION_SAMPLES="${BIAS_CORRECTION_SAMPLES:-4096}"',
-                'bash scripts/bash/run_float_model.sh',
-                'bash scripts/bash/run_raw_quantize.sh',
-                'bash scripts/bash/run_quantize.sh',
-            ],
-            "bias_correction/run_llama31.sh": [
-                'MODEL_PATH="${MODEL_PATH:-meta-llama/Meta-Llama-3.1-8B}"',
-                'POST_CORRECTION="${POST_CORRECTION:-bias_correction}"',
-                'BIAS_CORRECTION_SAMPLES="${BIAS_CORRECTION_SAMPLES:-4096}"',
-                'bash scripts/bash/run_float_model.sh',
-                'bash scripts/bash/run_raw_quantize.sh',
-                'bash scripts/bash/run_quantize.sh',
-            ],
-            "bias_correction/run_mistral.sh": [
-                'MODEL_PATH="${MODEL_PATH:-mistralai/Mistral-7B-v0.3}"',
-                'POST_CORRECTION="${POST_CORRECTION:-bias_correction}"',
-                'BIAS_CORRECTION_SAMPLES="${BIAS_CORRECTION_SAMPLES:-4096}"',
-                'bash scripts/bash/run_float_model.sh',
-                'bash scripts/bash/run_raw_quantize.sh',
-                'bash scripts/bash/run_quantize.sh',
-            ],
-            "bias_correction/run_qwen25.sh": [
-                'MODEL_PATH="${MODEL_PATH:-Qwen/Qwen2.5-7B}"',
-                'POST_CORRECTION="${POST_CORRECTION:-bias_correction}"',
-                'BIAS_CORRECTION_SAMPLES="${BIAS_CORRECTION_SAMPLES:-4096}"',
-                'bash scripts/bash/run_float_model.sh',
-                'bash scripts/bash/run_raw_quantize.sh',
-                'bash scripts/bash/run_quantize.sh',
+                'for bits in "${BITS_VALUES[@]}"; do',
+                'main.py float_model',
+                'main.py quantize',
+                '--origin-method "$ORIGIN_METHOD"',
+                '--post-correction "$POST_CORRECTION"',
+                '--bits "$bits"',
+                '--flatquant-epochs "$FLATQUANT_EPOCHS"',
             ],
         }
 
         for relative_path, snippets in scripts.items():
             content = Path("scripts/bash", relative_path).read_text(encoding="utf-8")
             for snippet in snippets:
-                self.assertIn(snippet, content, f"Missing '{snippet}' in {relative_path}")
+                self.assertIn(snippet, content, f"Missing {snippet!r} in {relative_path}")
+
+    def test_bias_correction_scripts_use_single_run_defaults(self):
+        scripts = {
+            "bias_correction/awq/run_llama3.sh": [
+                'ORIGIN_METHOD="awq"',
+                'POST_CORRECTION="bias_correction"',
+                'BIAS_CORRECTION_SAMPLES="${BIAS_CORRECTION_SAMPLES:-4096}"',
+                '--origin-method "$ORIGIN_METHOD"',
+                '--post-correction "$POST_CORRECTION"',
+                '--bias-correction-samples "$BIAS_CORRECTION_SAMPLES"',
+            ],
+            "bias_correction/flatquant/run_llama3.sh": [
+                'ORIGIN_METHOD="flatquant"',
+                'POST_CORRECTION="bias_correction"',
+                'BIAS_CORRECTION_SAMPLES="${BIAS_CORRECTION_SAMPLES:-4096}"',
+                '--origin-method "$ORIGIN_METHOD"',
+                '--post-correction "$POST_CORRECTION"',
+                '--flatquant-epochs "$FLATQUANT_EPOCHS"',
+            ],
+        }
+
+        for relative_path, snippets in scripts.items():
+            content = Path("scripts/bash", relative_path).read_text(encoding="utf-8")
+            for snippet in snippets:
+                self.assertIn(snippet, content, f"Missing {snippet!r} in {relative_path}")
+
+
+    def test_flatquant_mistral_script_can_skip_float_model(self):
+        content = Path("scripts/bash/smart_flip/flatquant/run_mistral.sh").read_text(encoding="utf-8")
+        self.assertIn('RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"', content)
+        self.assertIn('if [ "$RUN_FLOAT_MODEL" = "1" ]; then', content)
+        self.assertIn('echo "==> skipping float_model :: ${MODEL_PATH}"', content)
+        self.assertIn('RAW_MODEL_DIR="${RAW_MODEL_DIR:-${RESULTS_MODELS_DIR}/${ORIGIN_METHOD}_raw/${RAW_RUN_NAME}}"', content)
+        self.assertIn('--flatquant-raw-path "$RAW_MODEL_DIR"', content)
+        self.assertIn('"$PYTHON_BIN" main.py float_model', content)
 
 
 if __name__ == "__main__":

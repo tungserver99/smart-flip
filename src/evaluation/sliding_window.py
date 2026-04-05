@@ -9,6 +9,8 @@ import pickle
 from pathlib import Path
 from typing import Dict
 
+from src.io_utils import dump_json
+
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
@@ -119,8 +121,15 @@ class SlidingWindowEvaluator:
         perplexity = torch.exp(total_nll / total_tokens).item()
         return {"perplexity": perplexity, "total_tokens": total_tokens}
 
-    def evaluate_model_on_dataset(self, model_path: str, model_name: str, texts, dataset_name: str):
+    def evaluate_model_on_dataset(self, model_path, model_name: str, texts, dataset_name: str):
         print(f"\nEvaluating {model_name} on {dataset_name}...")
+        if isinstance(model_path, dict) and {"model", "tokenizer"}.issubset(model_path):
+            model = model_path["model"]
+            tokenizer = model_path["tokenizer"]
+            if torch.cuda.is_available() and self.device == "cuda":
+                model = model.to(self.device)
+            return self.evaluate_sliding_window(model, tokenizer, texts)
+
         tokenizer = AutoTokenizer.from_pretrained(
             model_path,
             trust_remote_code=True,
@@ -161,8 +170,4 @@ class SlidingWindowEvaluator:
 
     def save_results(self, output_path: str):
         output = Path(output_path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = output.with_suffix(output.suffix + ".tmp")
-        with open(temp_path, "w", encoding="utf-8") as handle:
-            json.dump(self.results, handle, indent=2)
-        temp_path.replace(output)
+        dump_json(output, self.results, indent=2)

@@ -1,3 +1,5 @@
+import builtins
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -35,11 +37,13 @@ class ParserModeTests(unittest.TestCase):
             "quantize",
             "--model-path",
             "dummy-model",
+            "--origin-method",
+            "flatquant",
             "--post-correction",
             "bias_correction",
         ])
 
-        self.assertEqual(args.origin_method, "awq")
+        self.assertEqual(args.origin_method, "flatquant")
         self.assertEqual(args.post_correction, "bias_correction")
 
     def test_quantize_modes_set_origin_and_post_correction_defaults(self):
@@ -58,6 +62,23 @@ class ParserModeTests(unittest.TestCase):
         self.assertTrue(flip_args.include_lm_eval)
         self.assertEqual(flip_args.lm_eval_task_preset, "extended")
         self.assertIn("lambada_openai", flip_args.lm_eval_tasks)
+
+
+    def test_flatquant_origin_method_accepts_flatquant_defaults(self):
+        parser = main.build_parser()
+
+        args = parser.parse_args([
+            "raw_quantize",
+            "--model-path",
+            "dummy-model",
+            "--origin-method",
+            "flatquant",
+        ])
+
+        self.assertEqual(args.origin_method, "flatquant")
+        self.assertEqual(args.bits, 4)
+        self.assertEqual(args.flatquant_epochs, 15)
+        self.assertEqual(args.flatquant_cali_bsz, 4)
 
     def test_eval_modes_enable_full_results_by_default(self):
         parser = main.build_parser()
@@ -182,6 +203,36 @@ class ParserModeTests(unittest.TestCase):
         run_ppl.assert_called_once_with(args, model_paths)
         run_lm_eval.assert_not_called()
 
+    def test_save_evaluation_results_falls_back_when_temp_write_fails(self):
+        results = {"perplexity": {"WikiText-2": {"raw_quantize": {"perplexity": 12.3}}}}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = main.Path(tmpdir) / "flatquant_raw.json"
+            real_open = builtins.open
+
+            def flaky_open(path, *args, **kwargs):
+                candidate = main.Path(path)
+                if candidate == output_path.with_suffix(output_path.suffix + ".tmp"):
+                    raise OSError(5, "Input/output error")
+                return real_open(path, *args, **kwargs)
+
+            with patch("builtins.open", side_effect=flaky_open):
+                main.save_evaluation_results(results, output_path)
+
+            self.assertTrue(output_path.exists())
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                '{\n'
+                '  "perplexity": {\n'
+                '    "WikiText-2": {\n'
+                '      "raw_quantize": {\n'
+                '        "perplexity": 12.3\n'
+                "      }\n"
+                "    }\n"
+                "  }\n"
+                "}",
+            )
+
     def test_run_raw_quantize_evaluates_then_deletes_temporary_model_dir(self):
         args = SimpleNamespace()
         output_dir = main.Path('./results/models/.tmp/raw-run')
@@ -208,6 +259,37 @@ class ParserModeTests(unittest.TestCase):
         run_quantize.assert_called_once_with(args)
         rmtree.assert_called_once_with(output_dir, ignore_errors=True)
 
+
+
+    def test_quantize_mode_accepts_flatquant_raw_path(self):
+        parser = main.build_parser()
+
+        args = parser.parse_args([
+            "quantize",
+            "--model-path",
+            "dummy-model",
+            "--origin-method",
+            "flatquant",
+            "--post-correction",
+            "smart_flip",
+            "--flatquant-raw-path",
+            "./results/models/flatquant_raw/raw-run",
+        ])
+
+        self.assertEqual(args.flatquant_raw_path, "./results/models/flatquant_raw/raw-run")
+
+    def test_run_raw_quantize_keeps_flatquant_raw_model_dir(self):
+        args = SimpleNamespace(origin_method="flatquant", post_correction="none")
+        output_dir = main.Path('./results/models/flatquant_raw/raw-run')
+
+        with patch('main.run_quantize', return_value=output_dir) as run_quantize:
+            with patch('main.evaluate_model_paths') as evaluate_model_paths:
+                with patch('main.shutil.rmtree') as rmtree:
+                    main.run_raw_quantize(args)
+
+        run_quantize.assert_called_once_with(args)
+        evaluate_model_paths.assert_called_once_with(args, {'raw_quantize': str(output_dir)}, variant='flatquant_raw')
+        rmtree.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

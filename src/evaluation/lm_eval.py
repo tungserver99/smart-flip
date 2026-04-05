@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
+from src.io_utils import dump_json
+
 
 class LMEvalHarnessRunner:
     def __init__(
@@ -77,12 +79,9 @@ class LMEvalHarnessRunner:
     def _write_raw_results(self, model_name: str, payload: dict):
         output_path = self.output_dir / f"{self.run_name}_{model_name}.json"
         safe_payload = self._make_json_safe(payload)
-        temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-        with open(temp_path, "w", encoding="utf-8") as handle:
-            json.dump(safe_payload, handle, indent=2)
-        temp_path.replace(output_path)
+        dump_json(output_path, safe_payload, indent=2)
 
-    def evaluate_model(self, model_name: str, model_path: str) -> dict:
+    def evaluate_model(self, model_name: str, model_path) -> dict:
         try:
             from lm_eval import evaluator
         except ImportError as exc:
@@ -90,15 +89,33 @@ class LMEvalHarnessRunner:
                 "lm-eval is not installed. Install the 'lm-eval' package or disable lm-eval with --no-lm-eval."
             ) from exc
 
-        payload = evaluator.simple_evaluate(
-            model="hf",
-            model_args=self._model_args(model_path),
-            tasks=self.tasks,
-            device=self.device,
-            batch_size=self.batch_size,
-            num_fewshot=self.num_fewshot,
-            log_samples=False,
-        )
+        if isinstance(model_path, dict) and {"model", "tokenizer"}.issubset(model_path):
+            from lm_eval.models.huggingface import HFLM
+
+            model = model_path["model"]
+            tokenizer = model_path["tokenizer"]
+            if self.device == "cuda":
+                model = model.to(self.device)
+            eval_batch_size = 1 if self.batch_size == "auto" else self.batch_size
+            hflm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=eval_batch_size)
+            payload = evaluator.simple_evaluate(
+                model=hflm,
+                tasks=self.tasks,
+                device=self.device,
+                batch_size=eval_batch_size,
+                num_fewshot=self.num_fewshot,
+                log_samples=False,
+            )
+        else:
+            payload = evaluator.simple_evaluate(
+                model="hf",
+                model_args=self._model_args(model_path),
+                tasks=self.tasks,
+                device=self.device,
+                batch_size=self.batch_size,
+                num_fewshot=self.num_fewshot,
+                log_samples=False,
+            )
         safe_payload = self._make_json_safe(payload)
         self._write_raw_results(model_name, payload)
         return {
