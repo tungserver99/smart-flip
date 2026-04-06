@@ -130,7 +130,7 @@ class FlatQuantRTNQuantizer:
 
     @staticmethod
     def _flatquant_root() -> Path:
-        return Path(__file__).resolve().parents[3] / "FlatQuant"
+        return Path(__file__).resolve().parents[2] / "flatquant"
 
     def _ensure_flatquant_importable(self):
         flatquant_root = str(self._flatquant_root())
@@ -578,3 +578,5 @@ class FlatQuantRTNQuantizer:
             "model": self.model,
             "tokenizer": self.tokenizer,
         }
+
+

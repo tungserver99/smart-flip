@@ -250,6 +250,11 @@ class QuantizationAssemblyTests(unittest.TestCase):
         self.assertFalse(observed["cali_called"])
         self.assertTrue(observed["reparameterized"])
 
+    def test_flatquant_root_points_to_vendored_package(self):
+        expected_root = Path(__file__).resolve().parents[1] / "flatquant"
+        self.assertEqual(FlatQuantRTNQuantizer._flatquant_root(), expected_root)
+        self.assertTrue((expected_root / "__init__.py").exists())
+
     def test_flatquant_aligns_reused_layer_modules_to_wrapped_weight_devices(self):
         class FakeMover:
             def __init__(self):
@@ -282,3 +287,4 @@ class QuantizationAssemblyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

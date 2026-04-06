@@ -151,7 +151,7 @@ class FlatQuantLlamaWrapperTests(unittest.TestCase):
                 sys.modules[name] = module
 
     def _load_module(self):
-        module_path = Path(__file__).resolve().parents[2] / "FlatQuant" / "flatquant" / "model_tools" / "llama_utils.py"
+        module_path = Path(__file__).resolve().parents[1] / "flatquant" / "model_tools" / "llama_utils.py"
         spec = importlib.util.spec_from_file_location("test_flatquant_llama_module", module_path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
@@ -214,3 +214,4 @@ class FlatQuantLlamaWrapperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
