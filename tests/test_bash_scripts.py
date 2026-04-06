@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import unittest
 from pathlib import Path
 
@@ -50,7 +51,7 @@ class BashScriptTests(unittest.TestCase):
                 'POST_CORRECTION="smart_flip"',
                 'BITS_VALUES=(4)',
                 'KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)',
-                'MAX_FLIP_VALUES=(0.01 0.02 0.03 0.04 0.05)',
+                'MAX_FLIP_VALUES=(0.05 0.02 0.03 0.04 0.01)',
                 'for bits in "${BITS_VALUES[@]}"; do',
                 'main.py float_model',
                 'main.py quantize',
@@ -92,15 +93,23 @@ class BashScriptTests(unittest.TestCase):
                 self.assertIn(snippet, content, f"Missing {snippet!r} in {relative_path}")
 
 
-    def test_flatquant_mistral_script_can_skip_float_model(self):
-        content = Path("scripts/bash/smart_flip/flatquant/run_mistral.sh").read_text(encoding="utf-8")
-        self.assertIn('RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"', content)
-        self.assertIn('if [ "$RUN_FLOAT_MODEL" = "1" ]; then', content)
-        self.assertIn('echo "==> skipping float_model :: ${MODEL_PATH}"', content)
-        self.assertIn('RAW_MODEL_DIR="${RAW_MODEL_DIR:-${RESULTS_MODELS_DIR}/${ORIGIN_METHOD}_raw/${RAW_RUN_NAME}}"', content)
-        self.assertIn('--flatquant-raw-path "$RAW_MODEL_DIR"', content)
-        self.assertIn('"$PYTHON_BIN" main.py float_model', content)
+    def test_flatquant_smart_flip_scripts_can_skip_float_model(self):
+        for relative_path in [
+            "scripts/bash/smart_flip/flatquant/run_llama3.sh",
+            "scripts/bash/smart_flip/flatquant/run_llama31.sh",
+            "scripts/bash/smart_flip/flatquant/run_mistral.sh",
+            "scripts/bash/smart_flip/flatquant/run_qwen25.sh",
+        ]:
+            content = Path(relative_path).read_text(encoding="utf-8")
+            self.assertIn('RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"', content)
+            self.assertIn('if [ "$RUN_FLOAT_MODEL" = "1" ]; then', content)
+            self.assertIn('echo "==> skipping float_model :: ${MODEL_PATH}"', content)
+            self.assertIn('RAW_MODEL_DIR="${RAW_MODEL_DIR:-${RESULTS_MODELS_DIR}/${ORIGIN_METHOD}_raw/${RAW_RUN_NAME}}"', content)
+            self.assertIn('--flatquant-raw-path "$RAW_MODEL_DIR"', content)
+            self.assertIn('"$PYTHON_BIN" main.py float_model', content)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+

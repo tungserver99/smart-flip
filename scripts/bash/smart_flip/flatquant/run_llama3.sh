@@ -21,6 +21,7 @@ INCLUDE_C4="${INCLUDE_C4:-1}"
 USE_WANDB="${USE_WANDB:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-egbc}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
+RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"
 
 FLOAT_ARGS=(
   --model-path "$MODEL_PATH"
@@ -120,8 +121,12 @@ BITS_VALUES=(4)
 KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)
 MAX_FLIP_VALUES=(0.05 0.02 0.03 0.04 0.01)
 
-echo "==> float_model :: ${MODEL_PATH}"
-"$PYTHON_BIN" main.py float_model   "${FLOAT_ARGS[@]}"   --run-name "$FLOAT_RUN_NAME"
+if [ "$RUN_FLOAT_MODEL" = "1" ]; then
+  echo "==> float_model :: ${MODEL_PATH}"
+  "$PYTHON_BIN" main.py float_model   "${FLOAT_ARGS[@]}"   --run-name "$FLOAT_RUN_NAME"
+else
+  echo "==> skipping float_model :: ${MODEL_PATH}"
+fi
 
 echo "==> raw_quantize :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
 RAW_ARGS=(
@@ -154,3 +159,4 @@ for bits in "${BITS_VALUES[@]}"; do
     done
   done
 done
+
