@@ -365,7 +365,7 @@ def run_quantize(args):
     if recipe.origin_method == "flatquant":
         args._evaluation_model_spec = quantizer.build_evaluation_target()
 
-    model.save_pretrained(output_dir)
+    model.save_pretrained(output_dir, safe_serialization=recipe.origin_method != "flatquant")
     tokenizer.save_pretrained(output_dir)
 
     metadata = {
