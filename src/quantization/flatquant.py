@@ -177,19 +177,11 @@ class FlatQuantRTNQuantizer:
 
         self._ensure_flatquant_importable()
         from flatquant.flat_utils import load_flat_parameters, reparameterize_model
-        from flatquant.model_tools.llama31_utils import apply_flatquant_to_llama_31
-        from flatquant.model_tools.llama_utils import apply_flatquant_to_llama
-        from flatquant.model_tools.qwen_utils import apply_flatquant_to_qwen
-        from src.quantization.flatquant_mistral import apply_flatquant_to_mistral
         from flatquant.train_utils import cali_flat_quant
 
         self._imports = {
             "load_flat_parameters": load_flat_parameters,
             "reparameterize_model": reparameterize_model,
-            "apply_flatquant_to_llama": apply_flatquant_to_llama,
-            "apply_flatquant_to_llama_31": apply_flatquant_to_llama_31,
-            "apply_flatquant_to_qwen": apply_flatquant_to_qwen,
-            "apply_flatquant_to_mistral": apply_flatquant_to_mistral,
             "cali_flat_quant": cali_flat_quant,
         }
         return self._imports
@@ -254,18 +246,22 @@ class FlatQuantRTNQuantizer:
         )
 
     def _select_apply_fn(self):
-        imports = self._load_flatquant_imports()
+        self._load_flatquant_imports()
         model_name = (getattr(self.model, "name_or_path", None) or getattr(self.model.config, "_name_or_path", "")).lower()
         model_type = getattr(self.model.config, "model_type", "")
 
         if model_type == "qwen2":
-            return imports["apply_flatquant_to_qwen"]
+            from flatquant.model_tools.qwen_utils import apply_flatquant_to_qwen
+            return apply_flatquant_to_qwen
         if model_type == "mistral":
-            return imports["apply_flatquant_to_mistral"]
+            from src.quantization.flatquant_mistral import apply_flatquant_to_mistral
+            return apply_flatquant_to_mistral
         if model_type == "llama" and "3.1" in model_name:
-            return imports["apply_flatquant_to_llama_31"]
+            from flatquant.model_tools.llama31_utils import apply_flatquant_to_llama_31
+            return apply_flatquant_to_llama_31
         if model_type == "llama":
-            return imports["apply_flatquant_to_llama"]
+            from flatquant.model_tools.llama_utils import apply_flatquant_to_llama
+            return apply_flatquant_to_llama
         raise ValueError(f"FlatQuant backend does not support model type: {model_type}")
 
     @staticmethod
@@ -665,5 +661,6 @@ class FlatQuantRTNQuantizer:
         if self.config.debug_diagnostics:
             target["layer_stats"] = self.layer_stats
         return target
+
 
 

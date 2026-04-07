@@ -1,4 +1,6 @@
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -144,6 +146,52 @@ class QuantizationAssemblyTests(unittest.TestCase):
         self.assertIsNone(correction)
         self.assertTrue(base_config.debug_diagnostics)
         self.assertEqual(base_config.debug_sample_limit, 64)
+
+    def test_flatquant_select_apply_fn_for_llama_does_not_require_qwen_imports(self):
+        quantizer = FlatQuantRTNQuantizer(
+            model=SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B")),
+            tokenizer=object(),
+            device="cpu",
+            config=FlatQuantConfig(),
+        )
+
+        flat_utils = types.ModuleType("flatquant.flat_utils")
+        flat_utils.load_flat_parameters = lambda *args, **kwargs: None
+        flat_utils.reparameterize_model = lambda *args, **kwargs: None
+        llama_utils = types.ModuleType("flatquant.model_tools.llama_utils")
+        llama_utils.apply_flatquant_to_llama = object()
+        llama31_utils = types.ModuleType("flatquant.model_tools.llama31_utils")
+        llama31_utils.apply_flatquant_to_llama_31 = object()
+        train_utils = types.ModuleType("flatquant.train_utils")
+        train_utils.cali_flat_quant = lambda *args, **kwargs: None
+        mistral_utils = types.ModuleType("src.quantization.flatquant_mistral")
+        mistral_utils.apply_flatquant_to_mistral = object()
+
+        backups = {name: sys.modules.get(name) for name in [
+            "flatquant.flat_utils",
+            "flatquant.model_tools.llama_utils",
+            "flatquant.model_tools.llama31_utils",
+            "flatquant.train_utils",
+            "src.quantization.flatquant_mistral",
+            "flatquant.model_tools.qwen_utils",
+        ]}
+        try:
+            sys.modules["flatquant.flat_utils"] = flat_utils
+            sys.modules["flatquant.model_tools.llama_utils"] = llama_utils
+            sys.modules["flatquant.model_tools.llama31_utils"] = llama31_utils
+            sys.modules["flatquant.train_utils"] = train_utils
+            sys.modules["src.quantization.flatquant_mistral"] = mistral_utils
+            sys.modules.pop("flatquant.model_tools.qwen_utils", None)
+
+            apply_fn = quantizer._select_apply_fn()
+
+            self.assertIs(apply_fn, llama_utils.apply_flatquant_to_llama)
+        finally:
+            for name, module in backups.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
 
     def test_flatquant_selector_supports_mistral_models(self):
         recipe = QuantizationRecipe(origin_method="flatquant", post_correction="none")
@@ -391,6 +439,7 @@ class QuantizationAssemblyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
