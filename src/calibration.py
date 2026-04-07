@@ -86,6 +86,7 @@ def get_wikitext2_calibration_data(
     seqlen: int = 2048,
     seed: int = 42,
     split: str = "train",
+    return_tensors: bool = False,
     cache_dir: str = "./data/cache/calibration",
 ):
     print("\n[WikiText-2 Calibration Data]")
@@ -97,7 +98,7 @@ def get_wikitext2_calibration_data(
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
 
-    cache_file = cache_path / f"wikitext2_calib_n{n_samples}_len{seqlen}_seed{seed}_split{split}.pkl"
+    cache_file = cache_path / f"wikitext2_calib_n{n_samples}_len{seqlen}_seed{seed}_split{split}_tensors{return_tensors}.pkl"
     if cache_file.exists():
         print(f"  Loading from cache: {cache_file}")
         with open(cache_file, "rb") as handle:
@@ -118,18 +119,20 @@ def get_wikitext2_calibration_data(
         n_samples = num_chunks
 
     chunk_indices = random.sample(range(num_chunks), n_samples)
-    calibration_texts = []
+    calibration_samples = []
     for idx in chunk_indices:
         start = idx * seqlen
         end = start + seqlen
         chunk_tokens = all_tokens[start:end]
-        calibration_texts.append(tokenizer.decode(chunk_tokens, skip_special_tokens=True))
+        if return_tensors:
+            calibration_samples.append(chunk_tokens.unsqueeze(0).clone())
+        else:
+            calibration_samples.append(tokenizer.decode(chunk_tokens, skip_special_tokens=True))
 
     with open(cache_file, "wb") as handle:
-        pickle.dump(calibration_texts, handle)
+        pickle.dump(calibration_samples, handle)
 
-    return calibration_texts
-
+    return calibration_samples
 
 def load_calibration_data(
     dataset_name: str,
@@ -137,6 +140,7 @@ def load_calibration_data(
     n_samples: int = 128,
     seqlen: int = 2048,
     seed: int = 42,
+    return_tensors: bool = False,
     cache_dir: str = "./data/cache/calibration",
 ):
     dataset_name = dataset_name.lower()
@@ -147,6 +151,7 @@ def load_calibration_data(
             n_samples=n_samples,
             seqlen=seqlen,
             seed=seed,
+            return_tensors=return_tensors,
             cache_dir=cache_dir,
         )
     if dataset_name == "wikitext2":
@@ -156,6 +161,7 @@ def load_calibration_data(
             seqlen=seqlen,
             seed=seed,
             split="train",
+            return_tensors=return_tensors,
             cache_dir=cache_dir,
         )
     if dataset_name == "wikitext2-simple":

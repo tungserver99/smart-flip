@@ -50,6 +50,8 @@ def build_flatquant_config(args) -> FlatQuantConfig:
         lac=args.flatquant_lac,
         diag_init=args.flatquant_diag_init,
         diag_alpha=args.flatquant_diag_alpha,
+        debug_diagnostics=args.flatquant_debug_diagnostics,
+        debug_sample_limit=args.flatquant_debug_sample_limit,
     )
 
 
@@ -108,3 +110,4 @@ def create_quantizer(model, tokenizer, device: str, args, recipe: QuantizationRe
         return quantizer, config, correction
 
     raise NotImplementedError(f"Unsupported origin method: {recipe.origin_method}")
+

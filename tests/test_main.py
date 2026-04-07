@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import torch
+
 import main
 
 
@@ -79,6 +81,23 @@ class ParserModeTests(unittest.TestCase):
         self.assertEqual(args.bits, 4)
         self.assertEqual(args.flatquant_epochs, 15)
         self.assertEqual(args.flatquant_cali_bsz, 4)
+
+    def test_flatquant_origin_method_accepts_debug_diagnostics_flags(self):
+        parser = main.build_parser()
+
+        args = parser.parse_args([
+            "raw_quantize",
+            "--model-path",
+            "dummy-model",
+            "--origin-method",
+            "flatquant",
+            "--flatquant-debug-diagnostics",
+            "--flatquant-debug-sample-limit",
+            "64",
+        ])
+
+        self.assertTrue(args.flatquant_debug_diagnostics)
+        self.assertEqual(args.flatquant_debug_sample_limit, 64)
 
     def test_eval_modes_enable_full_results_by_default(self):
         parser = main.build_parser()
@@ -233,6 +252,42 @@ class ParserModeTests(unittest.TestCase):
                 "}",
             )
 
+    def test_run_quantize_requests_tensor_calibration_for_flatquant(self):
+        parser = main.build_parser()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = parser.parse_args([
+                "raw_quantize",
+                "--model-path",
+                "dummy-model",
+                "--origin-method",
+                "flatquant",
+                "--results-models-dir",
+                tmpdir,
+                "--results-eval-dir",
+                tmpdir,
+            ])
+
+            tokenizer = SimpleNamespace(pad_token=None, eos_token="</s>", save_pretrained=lambda _path: None)
+            model = SimpleNamespace(
+                eval=lambda: None,
+                save_pretrained=lambda _path: None,
+            )
+            quantizer = SimpleNamespace(
+                set_artifact_dir=lambda _path: None,
+                quantize_model_sequential=lambda *args, **kwargs: None,
+                build_evaluation_target=lambda: {"model": "in-memory", "tokenizer": "tok", "evaluation_target": {"kind": "in_memory_model"}},
+                describe_evaluation_target=lambda: {"kind": "in_memory_model"},
+                layer_stats={},
+            )
+
+            with patch('main.AutoTokenizer.from_pretrained', return_value=tokenizer):
+                with patch('main.AutoModelForCausalLM.from_pretrained', return_value=model):
+                    with patch('src.calibration.load_calibration_data', return_value=[torch.tensor([[1, 2, 3]])]) as load_calibration_data:
+                        with patch('src.quantization.pipeline.create_quantizer', return_value=(quantizer, SimpleNamespace(__dict__={}), None)):
+                            main.run_quantize(args)
+
+            self.assertTrue(load_calibration_data.call_args.kwargs.get('return_tensors'))
+
     def test_run_raw_quantize_evaluates_then_deletes_temporary_model_dir(self):
         args = SimpleNamespace()
         output_dir = main.Path('./results/models/.tmp/raw-run')
@@ -293,3 +348,5 @@ class ParserModeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+

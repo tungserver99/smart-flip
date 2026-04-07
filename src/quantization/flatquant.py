@@ -43,6 +43,8 @@ class FlatQuantConfig:
     warmup: bool = False
     gptq_mse: bool = False
     w_groupsize: int = -1
+    debug_diagnostics: bool = False
+    debug_sample_limit: int = 256
 
 
 class _FlatQuantLogger:
@@ -116,6 +118,11 @@ class FlatQuantRTNQuantizer:
         self._imports = None
         self._prepared = False
         self._artifact_dir: str | None = None
+        self.debug_report = {
+            "enabled": bool(self.config.debug_diagnostics),
+            "sample_limit": int(self.config.debug_sample_limit),
+            "evaluation_target": self.describe_evaluation_target(),
+        }
 
         if not hasattr(self.model, "seqlen"):
             self.model.seqlen = 2048
@@ -127,6 +134,33 @@ class FlatQuantRTNQuantizer:
     @staticmethod
     def empty_flip_stats() -> dict:
         return {"total": 0}
+
+    def describe_evaluation_target(self) -> dict:
+        model_name = getattr(self.model, "name_or_path", None) or getattr(self.model.config, "_name_or_path", None)
+        return {
+            "kind": "in_memory_model",
+            "model_type": getattr(self.model.config, "model_type", None),
+            "model_name_or_path": model_name,
+            "debug_diagnostics": bool(self.config.debug_diagnostics),
+            "debug_sample_limit": int(self.config.debug_sample_limit),
+        }
+
+    @staticmethod
+    def _build_weight_summary(weight: torch.Tensor) -> dict:
+        weight_fp32 = weight.detach().to(dtype=torch.float32)
+        return {
+            "mean": float(weight_fp32.mean().item()),
+            "std": float(weight_fp32.std(unbiased=False).item()),
+            "min": float(weight_fp32.min().item()),
+            "max": float(weight_fp32.max().item()),
+            "l2_norm": float(weight_fp32.norm().item()),
+        }
+
+    def _build_stage_snapshot(self, weight: torch.Tensor, output_mse: float, **extra) -> dict:
+        snapshot = self._build_weight_summary(weight)
+        snapshot["output_mse"] = float(output_mse)
+        snapshot.update(extra)
+        return snapshot
 
     @staticmethod
     def _flatquant_root() -> Path:
@@ -265,22 +299,27 @@ class FlatQuantRTNQuantizer:
                 if post_attention_layernorm is not None and hasattr(post_attention_layernorm, "to"):
                     layer.post_attention_layernorm = post_attention_layernorm.to(mlp_device)
 
-    def _build_calibration_loader(self, calibration_data: Iterable[str]):
+    def _build_calibration_loader(self, calibration_data: Iterable[str | torch.Tensor]):
         loader = []
         seqlen = int(getattr(self.model, "seqlen", 2048))
         pad_id = self.tokenizer.pad_token_id
         if pad_id is None:
             pad_id = self.tokenizer.eos_token_id
 
-        for text in calibration_data:
-            encoded = self.tokenizer(
-                text,
-                return_tensors="pt",
-                truncation=True,
-                max_length=seqlen,
-                add_special_tokens=False,
-            )
-            input_ids = encoded["input_ids"]
+        for sample in calibration_data:
+            if isinstance(sample, torch.Tensor):
+                input_ids = sample.detach().clone().to(dtype=torch.long, device="cpu")
+                if input_ids.ndim == 1:
+                    input_ids = input_ids.unsqueeze(0)
+            else:
+                encoded = self.tokenizer(
+                    sample,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=seqlen,
+                    add_special_tokens=False,
+                )
+                input_ids = encoded["input_ids"]
             if input_ids.shape[1] < seqlen:
                 pad = torch.full((1, seqlen - input_ids.shape[1]), pad_id, dtype=input_ids.dtype)
                 input_ids = torch.cat([input_ids, pad], dim=1)
@@ -416,17 +455,28 @@ class FlatQuantRTNQuantizer:
             handle.remove()
         return activation_data, outs
 
-    def _compute_output_mse(self, float_weight: torch.Tensor, quant_weight: torch.Tensor, activation_batches: Iterable[torch.Tensor]) -> float:
+    def _compute_output_mse(
+        self,
+        float_weight: torch.Tensor,
+        quant_weight: torch.Tensor,
+        activation_batches: Iterable[torch.Tensor],
+        bias_delta: Optional[torch.Tensor] = None,
+    ) -> float:
         activation_rows = self._flatten_activations(activation_batches)
         if activation_rows is None:
             return 0.0
 
-        max_samples = min(1024, activation_rows.shape[0])
+        sample_limit = 1024
+        if self.config.debug_diagnostics:
+            sample_limit = max(1, int(self.config.debug_sample_limit))
+        max_samples = min(sample_limit, activation_rows.shape[0])
         if activation_rows.shape[0] > max_samples:
             activation_rows = activation_rows[:max_samples]
         x_samples = activation_rows.to(device=float_weight.device, dtype=float_weight.dtype)
         y_orig = torch.matmul(x_samples, float_weight.t())
         y_quant = torch.matmul(x_samples, quant_weight.t())
+        if bias_delta is not None:
+            y_quant = y_quant + bias_delta.to(device=y_quant.device, dtype=y_quant.dtype)
         return float((y_orig - y_quant).pow(2).mean().item())
 
     def _quantize_weight_rtn_raw(self, weight: torch.Tensor) -> IntegerQuantizedTensorState:
@@ -488,13 +538,23 @@ class FlatQuantRTNQuantizer:
         quant_weight = quant_state.dequantize_truncated()
         quant_error = self._compute_output_mse(float_weight, quant_weight, activation_batches)
 
+        stage_diagnostics = None
+        if self.config.debug_diagnostics:
+            stage_diagnostics = {
+                "post_flatquant": self._build_stage_snapshot(float_weight, 0.0),
+                "post_rtn": self._build_stage_snapshot(quant_weight, quant_error),
+            }
+
         if self.post_correction is None:
             module.weight.data = quant_weight.to(module.weight.data.dtype)
-            self.layer_stats[name] = {
+            stats = {
                 "error": quant_error,
                 "outlier_percent": 0.0,
                 "flip_stats": self.empty_flip_stats(),
             }
+            if stage_diagnostics is not None:
+                stats["stage_diagnostics"] = stage_diagnostics
+            self.layer_stats[name] = stats
             return
 
         correction_name = type(self.post_correction).__name__
@@ -507,24 +567,47 @@ class FlatQuantRTNQuantizer:
             )
             module.weight.data = quant_weight.to(module.weight.data.dtype)
             self.bias_correction.apply_bias_delta(module, bias_delta, self.device, module.weight.data.dtype)
-            self.layer_stats[name] = {
-                "error": quant_error,
+            corrected_error = self._compute_output_mse(float_weight, quant_weight, activation_batches, bias_delta=bias_delta)
+            stats = {
+                "error": corrected_error,
+                "pre_correction_error": quant_error,
+                "post_correction_error": corrected_error,
                 "outlier_percent": 0.0,
                 "flip_stats": {"total": 0, "bias_corrected": True},
                 "bias_delta_norm": float(bias_delta.norm().item()),
             }
+            if stage_diagnostics is not None:
+                stage_diagnostics["post_correction"] = self._build_stage_snapshot(
+                    quant_weight,
+                    corrected_error,
+                    bias_delta_norm=float(bias_delta.norm().item()),
+                )
+                stats["stage_diagnostics"] = stage_diagnostics
+            self.layer_stats[name] = stats
             return
 
         post_mean = self._build_post_mean(activation_batches, float_weight.dtype, float_weight.device)
         if post_mean is None:
             post_mean = torch.zeros(float_weight.shape[1], device=float_weight.device, dtype=float_weight.dtype)
         corrected_weight, outlier_percent, flip_stats = self.post_correction.apply(quant_state, post_mean)
+        corrected_error = self._compute_output_mse(float_weight, corrected_weight, activation_batches)
         module.weight.data = corrected_weight.to(module.weight.data.dtype)
-        self.layer_stats[name] = {
-            "error": quant_error,
+        stats = {
+            "error": corrected_error,
+            "pre_correction_error": quant_error,
+            "post_correction_error": corrected_error,
             "outlier_percent": outlier_percent,
             "flip_stats": flip_stats,
         }
+        if stage_diagnostics is not None:
+            stage_diagnostics["post_correction"] = self._build_stage_snapshot(
+                corrected_weight,
+                corrected_error,
+                outlier_percent=float(outlier_percent),
+                flip_total=int(flip_stats.get("total", 0)) if isinstance(flip_stats, dict) else 0,
+            )
+            stats["stage_diagnostics"] = stage_diagnostics
+        self.layer_stats[name] = stats
 
     def quantize_model_sequential(self, calibration_data, n_samples: int = 128, reuse_flat_parameters_path: str | None = None):
         calibration_subset = list(calibration_data[:n_samples])
@@ -574,9 +657,13 @@ class FlatQuantRTNQuantizer:
         self.model.eval()
 
     def build_evaluation_target(self) -> dict:
-        return {
+        target = {
             "model": self.model,
             "tokenizer": self.tokenizer,
+            "evaluation_target": self.describe_evaluation_target(),
         }
+        if self.config.debug_diagnostics:
+            target["layer_stats"] = self.layer_stats
+        return target
 
 

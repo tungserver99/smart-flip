@@ -342,6 +342,7 @@ def run_quantize(args):
         n_samples=args.n_calib,
         seqlen=args.calib_seqlen,
         seed=args.seed,
+        return_tensors=recipe.origin_method == "flatquant",
         cache_dir=args.calibration_cache_dir,
     )
 
@@ -378,6 +379,7 @@ def run_quantize(args):
         "base_config": base_config.__dict__,
         "post_correction_config": correction.config.__dict__ if correction is not None else None,
         "layer_stats": quantizer.layer_stats,
+        "evaluation_target": quantizer.describe_evaluation_target() if hasattr(quantizer, "describe_evaluation_target") else {"kind": "saved_model_dir", "path": str(output_dir)},
     }
     with open(output_dir / "metadata.json", "w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2)
@@ -508,6 +510,8 @@ def build_parser():
         cmd.add_argument("--no-flatquant-lac", dest="flatquant_lac", action="store_false")
         cmd.add_argument("--flatquant-diag-init", choices=["sq_style", "one_style"], default="sq_style")
         cmd.add_argument("--flatquant-diag-alpha", type=float, default=0.3)
+        cmd.add_argument("--flatquant-debug-diagnostics", action="store_true", default=False)
+        cmd.add_argument("--flatquant-debug-sample-limit", type=int, default=256)
         add_eval_args(cmd)
 
     float_model = subparsers.add_parser("float_model", help="Evaluate the original float model only")
@@ -552,3 +556,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

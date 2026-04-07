@@ -97,10 +97,11 @@ class FlatQuantLlamaWrapperTests(unittest.TestCase):
                 self.down_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
 
         class RotaryEmbedding(nn.Module):
-            def forward(self, x, position_ids):
-                batch, seq_len = position_ids.shape
-                cos = torch.ones(batch, seq_len, x.shape[-1], dtype=x.dtype, device=x.device)
-                sin = torch.zeros(batch, seq_len, x.shape[-1], dtype=x.dtype, device=x.device)
+            def forward(self, x, seq_len=None):
+                batch = x.shape[0]
+                seq = int(seq_len if seq_len is not None else x.shape[-2])
+                cos = torch.ones(batch, seq, x.shape[-1], dtype=x.dtype, device=x.device)
+                sin = torch.zeros(batch, seq, x.shape[-1], dtype=x.dtype, device=x.device)
                 return cos, sin
 
         class LlamaAttention(nn.Module):

@@ -34,6 +34,8 @@ class QuantizationAssemblyTests(unittest.TestCase):
             flatquant_lac=True,
             flatquant_diag_init="sq_style",
             flatquant_diag_alpha=0.3,
+            flatquant_debug_diagnostics=False,
+            flatquant_debug_sample_limit=256,
         )
 
     def test_recipe_variant_name_is_generic(self):
@@ -123,6 +125,26 @@ class QuantizationAssemblyTests(unittest.TestCase):
         self.assertIs(quantizer.post_correction, correction)
 
 
+    def test_create_quantizer_builds_flatquant_with_debug_diagnostics_config(self):
+        recipe = QuantizationRecipe(origin_method="flatquant", post_correction="none")
+        args = self.make_args()
+        args.flatquant_debug_diagnostics = True
+        args.flatquant_debug_sample_limit = 64
+
+        quantizer, base_config, correction = create_quantizer(
+            model=SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B")),
+            tokenizer=object(),
+            device="cpu",
+            args=args,
+            recipe=recipe,
+        )
+
+        self.assertIsInstance(quantizer, FlatQuantRTNQuantizer)
+        self.assertIsInstance(base_config, FlatQuantConfig)
+        self.assertIsNone(correction)
+        self.assertTrue(base_config.debug_diagnostics)
+        self.assertEqual(base_config.debug_sample_limit, 64)
+
     def test_flatquant_selector_supports_mistral_models(self):
         recipe = QuantizationRecipe(origin_method="flatquant", post_correction="none")
         quantizer, base_config, correction = create_quantizer(
@@ -142,6 +164,36 @@ class QuantizationAssemblyTests(unittest.TestCase):
         hidden_states = torch.randn(1, 2, 3)
         self.assertIs(FlatQuantRTNQuantizer._extract_hidden_states(hidden_states), hidden_states)
         self.assertIs(FlatQuantRTNQuantizer._extract_hidden_states((hidden_states, None)), hidden_states)
+
+    def test_flatquant_build_calibration_loader_accepts_token_tensors_without_retokenizing(self):
+        class TokenizerStub:
+            pad_token_id = 99
+            eos_token_id = 100
+
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, *_args, **_kwargs):
+                self.calls += 1
+                raise AssertionError("tokenizer should not be called for tensor calibration samples")
+
+        tokenizer = TokenizerStub()
+        quantizer = FlatQuantRTNQuantizer(
+            model=SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B"), seqlen=6),
+            tokenizer=tokenizer,
+            device="cpu",
+            config=FlatQuantConfig(),
+        )
+
+        token_sample = torch.tensor([[11, 12, 13, 14]], dtype=torch.long)
+        loader = quantizer._build_calibration_loader([token_sample])
+
+        self.assertEqual(tokenizer.calls, 0)
+        self.assertEqual(len(loader), 1)
+        input_ids, targets = loader[0]
+        self.assertTrue(torch.equal(input_ids[:, :4], token_sample))
+        self.assertTrue(torch.equal(input_ids[:, 4:], torch.tensor([[99, 99]], dtype=torch.long)))
+        self.assertTrue(torch.equal(targets, input_ids))
 
 
     def test_flatquant_prepare_model_creates_exp_dir(self):
@@ -285,6 +337,61 @@ class QuantizationAssemblyTests(unittest.TestCase):
         self.assertEqual(layer.mlp.to_calls, [torch.device("cpu")])
         self.assertEqual(layer.post_attention_layernorm.to_calls, [torch.device("cpu")])
 
+    def test_flatquant_quantize_module_records_stage_diagnostics_for_raw_rtn(self):
+        quantizer = FlatQuantRTNQuantizer(
+            model=SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B"), seqlen=16),
+            tokenizer=object(),
+            device="cpu",
+            config=FlatQuantConfig(debug_diagnostics=True),
+        )
+        module = torch.nn.Linear(2, 2, bias=False)
+        module.weight.data = torch.tensor([[1.0, -2.0], [0.5, 3.0]], dtype=torch.float32)
+        activation_batches = [
+            torch.tensor([[1.0, 0.5], [-1.0, 2.0]], dtype=torch.float32),
+        ]
+
+        quantizer._quantize_module("model.layers.0.self_attn.q_proj.linear", module, activation_batches)
+
+        stats = quantizer.layer_stats["model.layers.0.self_attn.q_proj.linear"]
+        self.assertIn("stage_diagnostics", stats)
+        self.assertIn("post_flatquant", stats["stage_diagnostics"])
+        self.assertIn("post_rtn", stats["stage_diagnostics"])
+        self.assertIn("evaluation_target", quantizer.build_evaluation_target())
+        self.assertEqual(quantizer.build_evaluation_target()["evaluation_target"]["kind"], "in_memory_model")
+        self.assertGreaterEqual(stats["stage_diagnostics"]["post_rtn"]["output_mse"], 0.0)
+
+    def test_flatquant_quantize_module_records_post_correction_stage_diagnostics(self):
+        class FakeCorrection:
+            def prepare_activation_means(self, mean):
+                return mean
+
+            def apply(self, quant_state, _post_mean):
+                corrected_weight = quant_state.dequantize_truncated() + 0.125
+                return corrected_weight, 12.5, {"total": 3}
+
+        quantizer = FlatQuantRTNQuantizer(
+            model=SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B"), seqlen=16),
+            tokenizer=object(),
+            device="cpu",
+            config=FlatQuantConfig(debug_diagnostics=True),
+            post_correction=FakeCorrection(),
+        )
+        module = torch.nn.Linear(2, 2, bias=False)
+        module.weight.data = torch.tensor([[1.0, -2.0], [0.5, 3.0]], dtype=torch.float32)
+        activation_batches = [
+            torch.tensor([[1.0, 0.5], [-1.0, 2.0]], dtype=torch.float32),
+        ]
+
+        quantizer._quantize_module("model.layers.0.mlp.down_proj.linear", module, activation_batches)
+
+        stats = quantizer.layer_stats["model.layers.0.mlp.down_proj.linear"]
+        self.assertIn("post_correction", stats["stage_diagnostics"])
+        self.assertIn("post_correction_error", stats)
+        self.assertEqual(stats["flip_stats"]["total"], 3)
+
 if __name__ == "__main__":
     unittest.main()
+
+
+
 

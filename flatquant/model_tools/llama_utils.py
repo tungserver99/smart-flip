@@ -200,8 +200,7 @@ class FlatQuantLlamaAttention(LlamaAttention):
         return q, k
 
     def forward(self, hidden_states, attention_mask, position_ids,
-                    past_key_value, output_attentions, use_cache,
-                    cache_position=None, position_embeddings=None, **kwargs):
+                    past_key_value, output_attentions, use_cache, **kwargs):
         bsz, q_len, _ = hidden_states.size()
         if self._ori_mode:
             query_states, key_states, value_states = self._ori_forward_after_ln(hidden_states)
@@ -221,11 +220,8 @@ class FlatQuantLlamaAttention(LlamaAttention):
                     "with a layer index."
                 )
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
-        if position_embeddings is None:
-            cos, sin = self.rotary_emb(value_states, position_ids)
-        else:
-            cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
         # ---- here do the quantization ----
         if not self._ori_mode:
             query_states, key_states = self.quant_kcache(query_states, key_states)
@@ -338,5 +334,3 @@ def apply_flatquant_to_llama(args, model):
         # mlp
         model.model.layers[layer].mlp = FlatQuantLlamaMLP(args, model.model.layers[layer].mlp)
     return model
-
-
