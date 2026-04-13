@@ -13,6 +13,8 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from src.evaluation.flatquant_runner import run_flatquant_perplexity_evaluation
+from src.evaluation.sliding_window import SlidingWindowEvaluator
 from src.io_utils import dump_json
 
 DEFAULT_LM_EVAL_TASKS = {
@@ -156,8 +158,6 @@ def resolve_model_reference(model_ref: str, models_root: str = "/models") -> str
 
 
 def run_perplexity_evaluation(args, model_paths: dict[str, str]) -> dict:
-    from src.evaluation.sliding_window import SlidingWindowEvaluator
-
     evaluator = SlidingWindowEvaluator(
         device="cuda" if torch.cuda.is_available() else "cpu",
         seed=args.seed,
@@ -323,18 +323,24 @@ def run_quantize(args):
     flatquant_raw_path = resolve_flatquant_raw_path(args, recipe)
     hf_token = resolve_hf_token()
 
-    tokenizer = AutoTokenizer.from_pretrained(resolved_model, trust_remote_code=True, token=hf_token)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    if recipe.origin_method == "flatquant":
+        from flatquant import model_utils as fq_model_utils
+        model, _apply_fn = fq_model_utils.get_model(resolved_model, hf_token)
+        model.eval()
+        tokenizer = AutoTokenizer.from_pretrained(resolved_model, use_fast=False, use_auth_token=hf_token)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(resolved_model, trust_remote_code=True, token=hf_token)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        resolved_model,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        trust_remote_code=True,
-        token=hf_token,
-    )
-    model.eval()
+        model = AutoModelForCausalLM.from_pretrained(
+            resolved_model,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+            token=hf_token,
+        )
+        model.eval()
 
     calibration_data = load_calibration_data(
         args.calib_dataset,

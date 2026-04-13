@@ -107,6 +107,7 @@ def create_quantizer(model, tokenizer, device: str, args, recipe: QuantizationRe
             config=config,
             post_correction=correction,
         )
+        quantizer._full_args = args
         return quantizer, config, correction
 
     raise NotImplementedError(f"Unsupported origin method: {recipe.origin_method}")

@@ -115,8 +115,10 @@ class FlatQuantRTNQuantizer:
         self.config = config or FlatQuantConfig()
         self.post_correction = post_correction
         self.layer_stats: Dict[str, dict] = {}
+        self._rtn_quantizers = {}
         self._imports = None
         self._prepared = False
+        self._post_flatquant_float_weights = {}
         self._artifact_dir: str | None = None
         self.debug_report = {
             "enabled": bool(self.config.debug_diagnostics),
@@ -341,6 +343,8 @@ class FlatQuantRTNQuantizer:
             imports["cali_flat_quant"](flatquant_args, self.model, calibration_loader, self.device, logger=_FlatQuantLogger())
         imports["reparameterize_model"](self.model)
         self.model.eval()
+
+        return trainloader, flatquant_args
         self._prepared = True
 
     def _get_layer_inputs(self, calibration_loader):
@@ -475,36 +479,39 @@ class FlatQuantRTNQuantizer:
             y_quant = y_quant + bias_delta.to(device=y_quant.device, dtype=y_quant.dtype)
         return float((y_orig - y_quant).pow(2).mean().item())
 
-    def _quantize_weight_rtn_raw(self, weight: torch.Tensor) -> IntegerQuantizedTensorState:
-        out_features, in_features = weight.shape
-        if self.config.w_asym:
-            w_min = torch.minimum(weight.min(dim=1, keepdim=True)[0], torch.zeros((out_features, 1), device=weight.device, dtype=weight.dtype))
-            w_max = torch.maximum(weight.max(dim=1, keepdim=True)[0], torch.zeros((out_features, 1), device=weight.device, dtype=weight.dtype))
-            max_int = 2 ** self.config.w_bits - 1
-            scale = (w_max - w_min).clamp(min=1e-5) / max_int
-            zero_point = torch.round(-w_min / scale).clamp(0, max_int)
-        else:
-            maxq = 2 ** (self.config.w_bits - 1) - 1
-            offset = maxq + 1
-            max_int = 2 ** self.config.w_bits - 1
-            scale = weight.abs().amax(dim=1, keepdim=True).clamp(min=1e-5) / maxq
-            zero_point = torch.full((out_features, 1), float(offset), device=weight.device, dtype=weight.dtype)
+    def _build_quant_state_from_rtn(self, float_weight: torch.Tensor, quantizer=None) -> IntegerQuantizedTensorState:
+        if quantizer is None:
+            self._ensure_flatquant_importable()
+            from flatquant.quant_utils import WeightQuantizer
 
-        scale_flat = scale.expand(out_features, in_features)
-        zero_flat = zero_point.expand(out_features, in_features)
-        pre_round = weight / scale_flat + zero_flat
-        integer_weights = torch.round(pre_round).clamp(0, max_int)
+            quantizer = WeightQuantizer()
+            quantizer.configure(self.config.w_bits, perchannel=True, sym=not self.config.w_asym, mse=self.config.gptq_mse)
+            quantizer.find_params(float_weight)
+        scale = quantizer.scale.to(device=float_weight.device, dtype=float_weight.dtype)
+        zero = quantizer.zero.to(device=float_weight.device, dtype=float_weight.dtype)
+        max_int = int(quantizer.maxq.item()) if hasattr(quantizer.maxq, "item") else int(quantizer.maxq)
+
+        if bool(getattr(quantizer, "sym", False)):
+            min_int = -(max_int + 1)
+            pre_round = float_weight / scale
+            integer_weights = torch.round(pre_round).clamp(min_int, max_int)
+            zero = torch.zeros_like(scale)
+        else:
+            min_int = 0
+            pre_round = float_weight / scale + zero
+            integer_weights = torch.round(pre_round).clamp(min_int, max_int)
 
         return IntegerQuantizedTensorState(
-            float_weights=weight,
+            float_weights=float_weight,
             pre_round=pre_round,
             integer_weights=integer_weights,
-            scale=scale_flat,
-            zero_point=zero_flat,
+            scale=scale,
+            zero_point=zero,
             max_int=max_int,
-            in_features=in_features,
-            padded_in_features=in_features,
-            original_dtype=weight.dtype,
+            min_int=min_int,
+            in_features=float_weight.shape[1],
+            padded_in_features=float_weight.shape[1],
+            original_dtype=float_weight.dtype,
         )
 
     def _build_post_mean(self, activation_batches: Iterable[torch.Tensor], dtype: torch.dtype, device: torch.device) -> Optional[torch.Tensor]:
@@ -528,9 +535,9 @@ class FlatQuantRTNQuantizer:
     def bias_correction(self):
         return self.post_correction
 
-    def _quantize_module(self, name: str, module: nn.Linear, activation_batches: Iterable[torch.Tensor]):
-        float_weight = module.weight.data.clone()
-        quant_state = self._quantize_weight_rtn_raw(float_weight)
+    def _quantize_module(self, name: str, module: nn.Linear, activation_batches: Iterable[torch.Tensor], float_weight_override: torch.Tensor | None = None, quantizer_override=None):
+        float_weight = float_weight_override if float_weight_override is not None else module.weight.data.clone()
+        quant_state = self._build_quant_state_from_rtn(float_weight, quantizer_override)
         quant_weight = quant_state.dequantize_truncated()
         quant_error = self._compute_output_mse(float_weight, quant_weight, activation_batches)
 
@@ -605,10 +612,90 @@ class FlatQuantRTNQuantizer:
             stats["stage_diagnostics"] = stage_diagnostics
         self.layer_stats[name] = stats
 
+    def _run_flatquant_raw(self, n_samples: int, reuse_flat_parameters_path: str | None = None):
+        self._ensure_flatquant_importable()
+        import flatquant.data_utils as fq_data_utils
+        import flatquant.flat_utils as fq_flat_utils
+        import flatquant.train_utils as fq_train_utils
+        import flatquant.utils as fq_utils
+        import gptq_utils as fq_gptq_utils
+
+        flatquant_args = self._build_flatquant_args(n_samples)
+        full_args = getattr(self, "_full_args", None)
+        if full_args is not None:
+            flatquant_args.cali_dataset = getattr(full_args, "calib_dataset", getattr(flatquant_args, "cali_dataset", "wikitext2"))
+            flatquant_args.nsamples = getattr(full_args, "n_calib", getattr(flatquant_args, "nsamples", n_samples))
+            flatquant_args.seed = getattr(full_args, "seed", flatquant_args.seed)
+
+        trainloader = fq_data_utils.get_loaders(
+            flatquant_args,
+            flatquant_args.cali_dataset,
+            self.tokenizer,
+            nsamples=flatquant_args.nsamples,
+            seqlen=self.model.seqlen,
+            eval_mode=False,
+        )
+
+        apply_fn = self._select_apply_fn()
+        self.model = apply_fn(flatquant_args, self.model)
+
+        if reuse_flat_parameters_path:
+            fq_flat_utils.load_flat_parameters(flatquant_args, self.model, path=reuse_flat_parameters_path)
+            self._align_reused_flatquant_module_devices(self.model)
+        elif flatquant_args.resume:
+            fq_flat_utils.load_flat_parameters(flatquant_args, self.model)
+        elif flatquant_args.reload_matrix:
+            fq_flat_utils.load_flat_matrices(flatquant_args, self.model, path=flatquant_args.matrix_path)
+        elif (flatquant_args.cali_trans or flatquant_args.add_diag or flatquant_args.lwc or flatquant_args.lac):
+            fq_train_utils.cali_flat_quant(flatquant_args, self.model, trainloader, fq_utils.DEV, logger=_FlatQuantLogger())
+
+        if flatquant_args.save_matrix and not flatquant_args.reload_matrix:
+            fq_flat_utils.save_flat_matrices(flatquant_args, self.model)
+
+        fq_flat_utils.reparameterize_model(self.model)
+        self._post_flatquant_float_weights = self._snapshot_float_weights()
+
+        quantizers = None
+        if flatquant_args.w_bits < 16:
+            if flatquant_args.gptq:
+                quantizers = fq_gptq_utils.gptq_fwrd(self.model, trainloader, fq_utils.DEV, flatquant_args)
+            else:
+                quantizers = fq_gptq_utils.rtn_fwrd(self.model, fq_utils.DEV, flatquant_args)
+
+        self._rtn_quantizers = quantizers or {}
+
+        if flatquant_args.quantized_save:
+            fq_flat_utils.save_quantized_weights_with_safetensors(flatquant_args, self.model, quantizers)
+
+        if flatquant_args.distribute_model:
+            fq_utils.distribute_model(self.model)
+        else:
+            self.model.to(fq_utils.DEV)
+
+        self.model.eval()
+        return trainloader, flatquant_args
+
+    def _snapshot_float_weights(self):
+        float_weights = {}
+        model_body = getattr(self.model, "model", None)
+        layers = getattr(model_body, "layers", None)
+        if layers is None:
+            return float_weights
+        for layer_idx, layer in enumerate(layers):
+            full = self._find_linear_modules(layer)
+            for name, module in full.items():
+                full_name = f"model.layers.{layer_idx}.{name}"
+                float_weights[full_name] = module.weight.detach().clone()
+        return float_weights
+
     def quantize_model_sequential(self, calibration_data, n_samples: int = 128, reuse_flat_parameters_path: str | None = None):
-        calibration_subset = list(calibration_data[:n_samples])
+        trainloader, _flatquant_args = self._run_flatquant_raw(n_samples, reuse_flat_parameters_path=reuse_flat_parameters_path)
+        float_weights = self._post_flatquant_float_weights or self._snapshot_float_weights()
+        if self.post_correction is None:
+            return
+
+        calibration_subset = [batch[0] for batch in trainloader][:n_samples]
         calibration_loader = self._build_calibration_loader(calibration_subset)
-        self._prepare_model(calibration_loader, reuse_flat_parameters_path=reuse_flat_parameters_path)
 
         use_cache = self.model.config.use_cache
         self.model.config.use_cache = False
@@ -631,7 +718,11 @@ class FlatQuantRTNQuantizer:
 
             for name, module in subset.items():
                 full_name = f"model.layers.{layer_idx}.{name}"
-                self._quantize_module(full_name, module, activation_data.get(name, []))
+                float_weight = float_weights.get(full_name) if float_weights is not None else None
+                if float_weight is not None:
+                    float_weight = float_weight.to(module.weight.device)
+                quantizer = self._rtn_quantizers.get(full_name) if self._rtn_quantizers is not None else None
+                self._quantize_module(full_name, module, activation_data.get(name, []), float_weight_override=float_weight, quantizer_override=quantizer)
 
             with torch.no_grad():
                 for sample_idx in range(inps.shape[0]):

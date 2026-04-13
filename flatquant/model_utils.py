@@ -74,11 +74,12 @@ def get_opt(model_name):
 
 # Unified model loading function
 def get_model(model_name, hf_token=None):
-    if 'llama-3.1' in model_name.lower():
+    lower_name = model_name.lower()
+    if 'llama-3.1' in lower_name:
         return get_llama_31(model_name, hf_token)
-    elif 'llama' in model_name:
+    elif 'llama' in lower_name:
         return get_llama(model_name, hf_token)
-    elif 'qwen-2.5' in model_name:
+    elif 'qwen2.5' in lower_name or 'qwen-2.5' in lower_name:
         return get_qwen2(model_name, hf_token)
     else:
         raise ValueError(f'Unknown model {model_name}')

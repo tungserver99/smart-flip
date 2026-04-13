@@ -13,6 +13,7 @@ class IntegerQuantizedTensorState:
     scale: torch.Tensor
     zero_point: torch.Tensor
     max_int: int
+    min_int: int
     in_features: int
     padded_in_features: int
     original_dtype: torch.dtype

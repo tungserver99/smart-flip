@@ -16,3 +16,5 @@ results/models/*
 results/eval/*
 data/cache/*
 !.gitkeep
+datasets/allenai/
+datasets/wikitext/*.zip

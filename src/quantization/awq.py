@@ -130,6 +130,7 @@ class AWQQuantizerXL:
             scale=scale_flat,
             zero_point=zp_flat,
             max_int=max_int,
+            min_int=0,
             in_features=in_features,
             padded_in_features=padded_in_features,
             original_dtype=w.dtype,

@@ -193,6 +193,19 @@ class QuantizationAssemblyTests(unittest.TestCase):
                 else:
                     sys.modules[name] = module
 
+    def test_flatquant_model_utils_recognizes_qwen25_hf_repo_names(self):
+        import flatquant.model_utils as model_utils
+
+        original_get_qwen2 = model_utils.get_qwen2
+        sentinel = object()
+        model_utils.get_qwen2 = lambda model_name, hf_token: (sentinel, hf_token)
+        try:
+            model, token = model_utils.get_model("Qwen/Qwen2.5-7B", hf_token="abc")
+            self.assertIs(model, sentinel)
+            self.assertEqual(token, "abc")
+        finally:
+            model_utils.get_qwen2 = original_get_qwen2
+
     def test_flatquant_selector_supports_mistral_models(self):
         recipe = QuantizationRecipe(origin_method="flatquant", post_correction="none")
         quantizer, base_config, correction = create_quantizer(
@@ -349,6 +362,139 @@ class QuantizationAssemblyTests(unittest.TestCase):
         self.assertEqual(observed["load_path"], "/tmp/raw-flatquant")
         self.assertFalse(observed["cali_called"])
         self.assertTrue(observed["reparameterized"])
+
+    def test_run_flatquant_raw_returns_trainloader_and_args(self):
+        recipe = QuantizationRecipe(origin_method="flatquant", post_correction="smart_flip")
+        model = SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B"), seqlen=16)
+        model.eval = lambda: model
+        model.to = lambda _device: model
+        quantizer, _base_config, _correction = create_quantizer(
+            model=model,
+            tokenizer=object(),
+            device="cpu",
+            args=self.make_args(),
+            recipe=recipe,
+        )
+
+        flatquant_pkg = types.ModuleType("flatquant")
+        data_utils = types.ModuleType("flatquant.data_utils")
+        flat_utils = types.ModuleType("flatquant.flat_utils")
+        train_utils = types.ModuleType("flatquant.train_utils")
+        utils = types.ModuleType("flatquant.utils")
+        gptq_utils = types.ModuleType("gptq_utils")
+
+        expected_loader = [("tokens", "targets")]
+        data_utils.get_loaders = lambda *args, **kwargs: expected_loader
+        flat_utils.load_flat_parameters = lambda *args, **kwargs: None
+        flat_utils.load_flat_matrices = lambda *args, **kwargs: None
+        flat_utils.save_flat_matrices = lambda *args, **kwargs: None
+        flat_utils.reparameterize_model = lambda _model: None
+        flat_utils.save_quantized_weights_with_safetensors = lambda *args, **kwargs: None
+        train_utils.cali_flat_quant = lambda *args, **kwargs: None
+        utils.DEV = "cpu"
+        utils.distribute_model = lambda _model: None
+        gptq_utils.gptq_fwrd = lambda *args, **kwargs: {}
+        gptq_utils.rtn_fwrd = lambda *args, **kwargs: {}
+
+        quantizer._select_apply_fn = lambda: (lambda _args, model_obj: model_obj)
+
+        backups = {
+            name: sys.modules.get(name)
+            for name in [
+                "flatquant",
+                "flatquant.data_utils",
+                "flatquant.flat_utils",
+                "flatquant.train_utils",
+                "flatquant.utils",
+                "gptq_utils",
+            ]
+        }
+        try:
+            sys.modules["flatquant"] = flatquant_pkg
+            sys.modules["flatquant.data_utils"] = data_utils
+            sys.modules["flatquant.flat_utils"] = flat_utils
+            sys.modules["flatquant.train_utils"] = train_utils
+            sys.modules["flatquant.utils"] = utils
+            sys.modules["gptq_utils"] = gptq_utils
+
+            trainloader, flatquant_args = quantizer._run_flatquant_raw(n_samples=1)
+
+            self.assertIs(trainloader, expected_loader)
+            self.assertEqual(flatquant_args.nsamples, 1)
+        finally:
+            for name, module in backups.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+
+    def test_run_flatquant_raw_reuses_saved_flat_parameters_without_recalibration(self):
+        recipe = QuantizationRecipe(origin_method="flatquant", post_correction="smart_flip")
+        model = SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B"), seqlen=16)
+        model.eval = lambda: model
+        model.to = lambda _device: model
+        quantizer, _base_config, _correction = create_quantizer(
+            model=model,
+            tokenizer=object(),
+            device="cpu",
+            args=self.make_args(),
+            recipe=recipe,
+        )
+
+        flatquant_pkg = types.ModuleType("flatquant")
+        data_utils = types.ModuleType("flatquant.data_utils")
+        flat_utils = types.ModuleType("flatquant.flat_utils")
+        train_utils = types.ModuleType("flatquant.train_utils")
+        utils = types.ModuleType("flatquant.utils")
+        gptq_utils = types.ModuleType("gptq_utils")
+
+        expected_loader = [("tokens", "targets")]
+        data_utils.get_loaders = lambda *args, **kwargs: expected_loader
+        observed = {"load_path": None, "cali_called": False}
+        flat_utils.load_flat_parameters = lambda _args, _model, path=None: observed.__setitem__("load_path", path)
+        flat_utils.load_flat_matrices = lambda *args, **kwargs: None
+        flat_utils.save_flat_matrices = lambda *args, **kwargs: None
+        flat_utils.reparameterize_model = lambda _model: None
+        flat_utils.save_quantized_weights_with_safetensors = lambda *args, **kwargs: None
+        train_utils.cali_flat_quant = lambda *args, **kwargs: observed.__setitem__("cali_called", True)
+        utils.DEV = "cpu"
+        utils.distribute_model = lambda _model: None
+        gptq_utils.gptq_fwrd = lambda *args, **kwargs: {}
+        gptq_utils.rtn_fwrd = lambda *args, **kwargs: {}
+
+        quantizer._select_apply_fn = lambda: (lambda _args, model_obj: model_obj)
+
+        backups = {
+            name: sys.modules.get(name)
+            for name in [
+                "flatquant",
+                "flatquant.data_utils",
+                "flatquant.flat_utils",
+                "flatquant.train_utils",
+                "flatquant.utils",
+                "gptq_utils",
+            ]
+        }
+        try:
+            sys.modules["flatquant"] = flatquant_pkg
+            sys.modules["flatquant.data_utils"] = data_utils
+            sys.modules["flatquant.flat_utils"] = flat_utils
+            sys.modules["flatquant.train_utils"] = train_utils
+            sys.modules["flatquant.utils"] = utils
+            sys.modules["gptq_utils"] = gptq_utils
+
+            trainloader, flatquant_args = quantizer._run_flatquant_raw(n_samples=1, reuse_flat_parameters_path="/tmp/raw-flatquant")
+
+            self.assertIs(trainloader, expected_loader)
+            self.assertEqual(flatquant_args.nsamples, 1)
+            self.assertEqual(observed["load_path"], "/tmp/raw-flatquant")
+            self.assertFalse(observed["cali_called"])
+        finally:
+            for name, module in backups.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
 
     def test_flatquant_root_points_to_vendored_package(self):
         expected_root = Path(__file__).resolve().parents[1] / "flatquant"

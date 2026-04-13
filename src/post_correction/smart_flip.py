@@ -133,7 +133,7 @@ class SmartFlipCorrection:
         valid_mask = torch.sign(flip_impacts) == target_sign
 
         w_int_proposed = quant_state.integer_weights + flip_dir
-        in_range = (w_int_proposed >= 0) & (w_int_proposed <= quant_state.max_int)
+        in_range = (w_int_proposed >= quant_state.min_int) & (w_int_proposed <= quant_state.max_int)
         valid_mask = valid_mask & in_range
 
         outlier_threshold, outlier_percent = self.compute_dynamic_outlier_threshold(act_padded, debug=debug)
@@ -167,7 +167,7 @@ class SmartFlipCorrection:
         sorted_flip_dir[~within_limit] = 0.0
 
         quant_state.integer_weights.scatter_add_(1, sorted_indices, sorted_flip_dir)
-        quant_state.integer_weights.clamp_(0, quant_state.max_int)
+        quant_state.integer_weights.clamp_(quant_state.min_int, quant_state.max_int)
 
         num_flips_total = int((sorted_flip_dir != 0).sum().item())
         flips_per_channel = (sorted_flip_dir != 0).sum(dim=0).float()
