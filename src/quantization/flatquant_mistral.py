@@ -1,5 +1,6 @@
 import inspect
 import math
+from types import SimpleNamespace
 from typing import Callable
 
 import torch
@@ -23,7 +24,15 @@ except ImportError:
 
 class FlatQuantMistralMLP(MistralMLP):
     def __init__(self, args, module: MistralMLP):
-        super().__init__(module.config)
+        if hasattr(module, "config"):
+            config = module.config
+        else:
+            config = SimpleNamespace(
+                hidden_size=module.up_proj.in_features,
+                intermediate_size=module.up_proj.out_features,
+                hidden_act="silu",
+            )
+        super().__init__(config)
         self.args = args
         self.up_proj = FlatQuantizedLinear(args, module.up_proj)
         self.gate_proj = FlatQuantizedLinear(args, module.gate_proj)
@@ -69,9 +78,13 @@ class FlatQuantMistralMLP(MistralMLP):
 
     def _ori_forward(self, x):
         if self.diag_init == "sq_style":
+            if self.up_smax.device != x.device or self.up_smax.dtype != x.dtype:
+                self.up_smax = self.up_smax.to(device=x.device, dtype=x.dtype)
             self.up_smax = torch.maximum(self.up_smax, x.reshape(-1, x.shape[-1]).abs().max(0)[0].clone().detach())
         x = self.act_fn(self.gate_proj._ori_forward(x)) * self.up_proj._ori_forward(x)
         if self.diag_init == "sq_style":
+            if self.down_smax.device != x.device or self.down_smax.dtype != x.dtype:
+                self.down_smax = self.down_smax.to(device=x.device, dtype=x.dtype)
             self.down_smax = torch.maximum(self.down_smax, x.reshape(-1, x.shape[-1]).abs().max(0)[0].clone().detach())
         down_states = self.down_proj._ori_forward(x)
         return down_states
@@ -216,6 +229,8 @@ class FlatQuantMistralAttention(MistralAttention):
 
     def _ori_forward_after_ln(self, hidden_states):
         if self.diag_init == "sq_style" and hasattr(self, "ln_smax"):
+            if self.ln_smax.device != hidden_states.device or self.ln_smax.dtype != hidden_states.dtype:
+                self.ln_smax = self.ln_smax.to(device=hidden_states.device, dtype=hidden_states.dtype)
             self.ln_smax = torch.maximum(self.ln_smax, hidden_states.reshape(-1, hidden_states.shape[-1]).abs().max(0)[0].clone().detach())
         query_states = self.q_proj._ori_forward(hidden_states)
         key_states = self.k_proj._ori_forward(hidden_states)
@@ -418,11 +433,12 @@ class FlatQuantMistralDecoderLayer(MistralDecoderLayer):
         use_cache=False,
         cache_position=None,
         position_embeddings=None,
+        output_attentions=False,
         **kwargs,
     ):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, _ = self.self_attn(
+        attn_output = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -430,8 +446,17 @@ class FlatQuantMistralDecoderLayer(MistralDecoderLayer):
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
+            output_attentions=output_attentions,
             **kwargs,
         )
+        if isinstance(attn_output, tuple):
+            hidden_states = attn_output[0]
+            attn_weights = attn_output[1] if len(attn_output) > 1 else None
+            present_key_value = attn_output[2] if len(attn_output) > 2 else None
+        else:
+            hidden_states = attn_output
+            attn_weights = None
+            present_key_value = None
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -439,9 +464,12 @@ class FlatQuantMistralDecoderLayer(MistralDecoderLayer):
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        if position_embeddings is None:
-            return (hidden_states,)
-        return hidden_states
+        outputs = (hidden_states,)
+        if output_attentions:
+            outputs += (attn_weights,)
+        if use_cache:
+            outputs += (present_key_value,)
+        return outputs
 
 
 def apply_flatquant_to_mistral(args, model):

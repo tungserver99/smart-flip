@@ -20,6 +20,12 @@ class BiasCorrectionCorrection:
         return raw_means
 
     def _flatten_activations(self, activation_batches: Iterable[torch.Tensor]) -> torch.Tensor | None:
+        if hasattr(activation_batches, "get_sample_rows"):
+            samples = activation_batches.get_sample_rows()
+            if samples is None or samples.numel() == 0:
+                return None
+            return samples
+
         batches = [batch.reshape(-1, batch.shape[-1]) for batch in activation_batches if batch.numel() > 0]
         if not batches:
             return None
@@ -56,7 +62,7 @@ class BiasCorrectionCorrection:
     def apply_bias_delta(self, module: nn.Linear, bias_delta: torch.Tensor, device: str, dtype: torch.dtype):
         adjustment = bias_delta.to(device=device, dtype=dtype)
         if module.bias is None:
-            module.bias = nn.Parameter(-adjustment)
+            module.bias = nn.Parameter(adjustment)
             return
 
-        module.bias.data = module.bias.data - adjustment.to(module.bias.data.dtype)
+        module.bias.data = module.bias.data + adjustment.to(module.bias.data.dtype)

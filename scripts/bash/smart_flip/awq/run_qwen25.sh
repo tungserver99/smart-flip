@@ -21,6 +21,7 @@ INCLUDE_C4="${INCLUDE_C4:-1}"
 USE_WANDB="${USE_WANDB:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-egbc}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
+RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"
 
 FLOAT_ARGS=(
   --model-path "$MODEL_PATH"
@@ -72,14 +73,19 @@ fi
 
 ORIGIN_METHOD="awq"
 POST_CORRECTION="smart_flip"
-FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float}"
-RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw}"
+MODEL_SLUG="${MODEL_PATH##*/}"
+FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"
+RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"
 BITS_VALUES=(4)
 KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)
 MAX_FLIP_VALUES=(0.01 0.02 0.03 0.04 0.05)
 
-echo "==> float_model :: ${MODEL_PATH}"
-"$PYTHON_BIN" main.py float_model   "${FLOAT_ARGS[@]}"   --run-name "$FLOAT_RUN_NAME"
+if [ "$RUN_FLOAT_MODEL" = "1" ]; then
+  echo "==> float_model :: ${MODEL_PATH}"
+  "$PYTHON_BIN" main.py float_model   "${FLOAT_ARGS[@]}"   --run-name "$FLOAT_RUN_NAME"
+else
+  echo "==> skipping float_model :: ${MODEL_PATH}"
+fi
 
 echo "==> raw_quantize :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
 RAW_ARGS=(
@@ -95,7 +101,7 @@ RAW_ARGS=(
 for bits in "${BITS_VALUES[@]}"; do
   for knee in "${KNEE_VALUES[@]}"; do
     for max_flip in "${MAX_FLIP_VALUES[@]}"; do
-      run_name="${ORIGIN_METHOD}_smart_flip_b${bits}_k${knee}_f${max_flip}"
+      run_name="${ORIGIN_METHOD}_smart_flip_${MODEL_SLUG}_b${bits}_k${knee}_f${max_flip}"
       echo "==> smart_flip :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD} :: bits=${bits} :: knee=${knee} :: max_flip=${max_flip}"
       QUANT_ARGS=(
         "${QUANT_BASE_ARGS[@]}"

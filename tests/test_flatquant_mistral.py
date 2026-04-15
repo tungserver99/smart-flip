@@ -251,6 +251,61 @@ class FlatQuantMistralWrapperTests(unittest.TestCase):
             diag_init='disabled',
         )
 
+    def test_mistral_mlp_wrapper_handles_missing_config(self):
+        backups = self._install_stub_modules()
+        try:
+            module = self._load_module()
+            args = self._make_args()
+            dummy = SimpleNamespace(
+                up_proj=nn.Linear(8, 16, bias=False),
+                gate_proj=nn.Linear(8, 16, bias=False),
+                down_proj=nn.Linear(16, 8, bias=False),
+            )
+
+            wrapper = module.FlatQuantMistralMLP(args, dummy)
+
+            self.assertIsNotNone(wrapper.act_fn)
+        finally:
+            self._restore_modules(backups)
+
+    def test_mistral_mlp_smax_tracks_input_device(self):
+        if not torch.cuda.is_available():
+            self.skipTest("CUDA not available")
+        backups = self._install_stub_modules()
+        try:
+            module = self._load_module()
+            args = self._make_args()
+            args.diag_init = 'sq_style'
+            config = self._make_config()
+            base_mlp = module.MistralMLP(config)
+            wrapper = module.FlatQuantMistralMLP(args, base_mlp)
+            wrapper = wrapper.to('cuda')
+            wrapper._ori_mode = True
+
+            x = torch.randn(2, 4, config.hidden_size, device='cuda')
+            wrapper._ori_forward(x)
+        finally:
+            self._restore_modules(backups)
+
+    def test_mistral_attention_ln_smax_tracks_hidden_state_device(self):
+        if not torch.cuda.is_available():
+            self.skipTest("CUDA not available")
+        backups = self._install_stub_modules()
+        try:
+            module = self._load_module()
+            config = self._make_config()
+            args = self._make_args()
+            args.diag_init = 'sq_style'
+            base_attn = module.MistralAttention(config, 0)
+            wrapper = module.FlatQuantMistralAttention(args, base_attn)
+            wrapper = wrapper.to('cuda')
+            wrapper._ori_mode = True
+
+            hidden_states = torch.randn(2, 4, config.hidden_size, device='cuda')
+            wrapper._ori_forward_after_ln(hidden_states)
+        finally:
+            self._restore_modules(backups)
+
     def test_mistral_wrapper_supports_position_embeddings_api(self):
         backups = self._install_stub_modules()
         try:
@@ -349,7 +404,54 @@ class FlatQuantMistralWrapperTests(unittest.TestCase):
                 position_ids=torch.tensor([[0, 1]]),
                 position_embeddings=(torch.ones(1, 2, config.head_dim), torch.zeros(1, 2, config.head_dim)),
             )
-            self.assertEqual(model_output.shape, hidden_states.shape)
+            self.assertIsInstance(model_output, tuple)
+            self.assertEqual(model_output[0].shape, hidden_states.shape)
+        finally:
+            self._restore_modules(backups)
+
+    def test_mistral_decoder_wrapper_returns_cache_entry_when_use_cache_enabled(self):
+        backups = self._install_stub_modules()
+        try:
+            module = self._load_module()
+            config = self._make_config()
+            args = self._make_args()
+            base_layer = module.MistralDecoderLayer(config, 0)
+            wrapped = module.FlatQuantMistralDecoderLayer(args, base_layer)
+
+            hidden_states = torch.randn(1, 2, config.hidden_size)
+            fake_cache = object()
+
+            class FakeAttn(nn.Module):
+                def forward(self, **_kwargs):
+                    return hidden_states, None, fake_cache
+
+            wrapped.self_attn = FakeAttn()
+
+            output = wrapped(hidden_states, attention_mask=None, position_ids=torch.tensor([[0, 1]]), use_cache=True)
+            self.assertIsInstance(output, tuple)
+            self.assertIs(output[1], fake_cache)
+        finally:
+            self._restore_modules(backups)
+
+    def test_mistral_decoder_wrapper_handles_three_value_attention_output(self):
+        backups = self._install_stub_modules()
+        try:
+            module = self._load_module()
+            config = self._make_config()
+            args = self._make_args()
+            base_layer = module.MistralDecoderLayer(config, 0)
+            wrapped = module.FlatQuantMistralDecoderLayer(args, base_layer)
+
+            hidden_states = torch.randn(1, 2, config.hidden_size)
+            class FakeAttn(nn.Module):
+                def forward(self, **_kwargs):
+                    return hidden_states, None, object()
+
+            wrapped.self_attn = FakeAttn()
+
+            output = wrapped(hidden_states, attention_mask=None, position_ids=torch.tensor([[0, 1]]))
+            self.assertIsInstance(output, tuple)
+            self.assertEqual(output[0].shape, hidden_states.shape)
         finally:
             self._restore_modules(backups)
 

@@ -1,4 +1,5 @@
 import sys
+import importlib
 import tempfile
 import types
 import unittest
@@ -10,7 +11,7 @@ import torch
 from src.post_correction.bias_correction import BiasCorrectionConfig, BiasCorrectionCorrection
 from src.post_correction.smart_flip import SmartFlipConfig, SmartFlipCorrection
 from src.quantization.awq import AWQConfig, AWQQuantizerXL
-from src.quantization.flatquant import FlatQuantConfig, FlatQuantRTNQuantizer
+from src.quantization.flatquant import FlatQuantConfig, FlatQuantRTNQuantizer, _ActivationCollector
 from src.quantization.pipeline import QuantizationRecipe, create_quantizer
 
 
@@ -147,6 +148,94 @@ class QuantizationAssemblyTests(unittest.TestCase):
         self.assertTrue(base_config.debug_diagnostics)
         self.assertEqual(base_config.debug_sample_limit, 64)
 
+
+class BiasCorrectionTests(unittest.TestCase):
+    make_args = QuantizationAssemblyTests.make_args
+
+    def test_apply_bias_delta_adds_delta_when_module_has_no_bias(self):
+        correction = BiasCorrectionCorrection()
+        module = torch.nn.Linear(2, 2, bias=False)
+        bias_delta = torch.tensor([0.25, -0.5], dtype=torch.float32)
+
+        correction.apply_bias_delta(module, bias_delta, device="cpu", dtype=torch.float32)
+
+        self.assertIsNotNone(module.bias)
+        self.assertTrue(torch.allclose(module.bias.detach(), bias_delta))
+
+    def test_apply_bias_delta_adds_delta_to_existing_bias(self):
+        correction = BiasCorrectionCorrection()
+        module = torch.nn.Linear(2, 2, bias=True)
+        module.bias.data = torch.tensor([1.0, -2.0], dtype=torch.float32)
+        bias_delta = torch.tensor([0.25, -0.5], dtype=torch.float32)
+
+        correction.apply_bias_delta(module, bias_delta, device="cpu", dtype=torch.float32)
+
+        self.assertTrue(torch.allclose(module.bias.detach(), torch.tensor([1.25, -2.5], dtype=torch.float32)))
+
+    def test_compute_bias_delta_accepts_activation_collector(self):
+        correction = BiasCorrectionCorrection(BiasCorrectionConfig(max_samples=32))
+        module = torch.nn.Linear(2, 2, bias=False)
+        module.weight.data = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        quant_weight = torch.zeros_like(module.weight.data)
+        collector = _ActivationCollector(sample_limit=16, track_mean=False, storage_dtype=torch.float32)
+        collector.add(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32))
+
+        bias_delta = correction.compute_bias_delta(module, quant_weight, collector, device="cpu")
+
+        self.assertTrue(torch.allclose(bias_delta, torch.tensor([2.0, 3.0], dtype=torch.float32)))
+
+
+    def test_flatquant_model_utils_supports_mistral_repo_names(self):
+        mistral_apply = object()
+
+        class MistralConfig:
+            @classmethod
+            def from_pretrained(cls, _name):
+                return SimpleNamespace()
+
+        class MistralForCausalLM:
+            @classmethod
+            def from_pretrained(cls, _name, torch_dtype=None, config=None, use_auth_token=None, low_cpu_mem_usage=None):
+                model = SimpleNamespace(config=config)
+                return model
+
+        transformers_stub = types.ModuleType("transformers")
+        transformers_stub.MistralConfig = MistralConfig
+        transformers_stub.MistralForCausalLM = MistralForCausalLM
+
+        llama_utils = types.ModuleType("flatquant.model_tools.llama_utils")
+        llama_utils.apply_flatquant_to_llama = object()
+        llama31_utils = types.ModuleType("flatquant.model_tools.llama31_utils")
+        llama31_utils.apply_flatquant_to_llama_31 = object()
+
+        mistral_utils = types.ModuleType("src.quantization.flatquant_mistral")
+        mistral_utils.apply_flatquant_to_mistral = mistral_apply
+
+        backups = {name: sys.modules.get(name) for name in [
+            "transformers",
+            "flatquant.model_tools.llama_utils",
+            "flatquant.model_tools.llama31_utils",
+            "src.quantization.flatquant_mistral",
+        ]}
+        try:
+            sys.modules["transformers"] = transformers_stub
+            sys.modules["flatquant.model_tools.llama_utils"] = llama_utils
+            sys.modules["flatquant.model_tools.llama31_utils"] = llama31_utils
+            sys.modules["src.quantization.flatquant_mistral"] = mistral_utils
+
+            import flatquant.model_utils as model_utils
+            importlib.reload(model_utils)
+
+            _model, apply_fn = model_utils.get_model("mistralai/Mistral-7B-v0.3", hf_token=None)
+            self.assertIs(apply_fn, mistral_apply)
+        finally:
+            for name, module in backups.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+
+
     def test_flatquant_select_apply_fn_for_llama_does_not_require_qwen_imports(self):
         quantizer = FlatQuantRTNQuantizer(
             model=SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B")),
@@ -257,10 +346,11 @@ class QuantizationAssemblyTests(unittest.TestCase):
         self.assertTrue(torch.equal(targets, input_ids))
 
 
-    def test_flatquant_prepare_model_creates_exp_dir(self):
+    def test_run_flatquant_raw_creates_exp_dir(self):
         recipe = QuantizationRecipe(origin_method="flatquant", post_correction="none")
         model = SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B"), seqlen=16)
         model.eval = lambda: model
+        model.to = lambda _device: model
         quantizer, _base_config, _correction = create_quantizer(
             model=model,
             tokenizer=object(),
@@ -268,6 +358,24 @@ class QuantizationAssemblyTests(unittest.TestCase):
             args=self.make_args(),
             recipe=recipe,
         )
+
+        flatquant_pkg = types.ModuleType("flatquant")
+        data_utils = types.ModuleType("flatquant.data_utils")
+        flat_utils = types.ModuleType("flatquant.flat_utils")
+        train_utils = types.ModuleType("flatquant.train_utils")
+        utils = types.ModuleType("flatquant.utils")
+        gptq_utils = types.ModuleType("gptq_utils")
+
+        data_utils.get_loaders = lambda *args, **kwargs: []
+        flat_utils.load_flat_parameters = lambda *args, **kwargs: None
+        flat_utils.load_flat_matrices = lambda *args, **kwargs: None
+        flat_utils.save_flat_matrices = lambda *args, **kwargs: None
+        flat_utils.reparameterize_model = lambda _model: None
+        flat_utils.save_quantized_weights_with_safetensors = lambda *args, **kwargs: None
+        gptq_utils.gptq_fwrd = lambda *args, **kwargs: {}
+        gptq_utils.rtn_fwrd = lambda *args, **kwargs: {}
+        utils.DEV = "cpu"
+        utils.distribute_model = lambda _model: None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             exp_dir = Path(tmpdir) / "nested" / "smart-flip-flatquant"
@@ -282,17 +390,39 @@ class QuantizationAssemblyTests(unittest.TestCase):
                 observed["exists"] = Path(args.exp_dir).exists()
                 observed["dir"] = args.exp_dir
 
-            quantizer._imports = {
-                "cali_flat_quant": fake_cali,
-                "reparameterize_model": lambda _model: None,
+            train_utils.cali_flat_quant = fake_cali
+
+            backups = {
+                name: sys.modules.get(name)
+                for name in [
+                    "flatquant",
+                    "flatquant.data_utils",
+                    "flatquant.flat_utils",
+                    "flatquant.train_utils",
+                    "flatquant.utils",
+                    "gptq_utils",
+                ]
             }
+            try:
+                sys.modules["flatquant"] = flatquant_pkg
+                sys.modules["flatquant.data_utils"] = data_utils
+                sys.modules["flatquant.flat_utils"] = flat_utils
+                sys.modules["flatquant.train_utils"] = train_utils
+                sys.modules["flatquant.utils"] = utils
+                sys.modules["gptq_utils"] = gptq_utils
 
-            quantizer._prepare_model([])
+                quantizer._run_flatquant_raw(n_samples=0)
 
-            self.assertEqual(observed["dir"], str(exp_dir))
-            self.assertTrue(observed["exists"])
+                self.assertEqual(observed["dir"], str(exp_dir))
+                self.assertTrue(observed["exists"])
+            finally:
+                for name, module in backups.items():
+                    if module is None:
+                        sys.modules.pop(name, None)
+                    else:
+                        sys.modules[name] = module
 
-    def test_flatquant_prepare_model_runs_with_grad_enabled(self):
+    def test_flatquant_quantize_model_sequential_calls_run_flatquant_raw_with_grad_enabled(self):
         recipe = QuantizationRecipe(origin_method="flatquant", post_correction="none")
         quantizer, _base_config, _correction = create_quantizer(
             model=SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B"), seqlen=16),
@@ -304,64 +434,17 @@ class QuantizationAssemblyTests(unittest.TestCase):
 
         seen = {}
 
-        def fake_build_loader(_calibration_data):
-            return []
-
-        def fake_prepare_model(_loader, reuse_flat_parameters_path=None):
+        def fake_run_flatquant_raw(_n_samples, reuse_flat_parameters_path=None):
             seen["grad_enabled"] = torch.is_grad_enabled()
             seen["reuse_flat_parameters_path"] = reuse_flat_parameters_path
-            raise RuntimeError("stop-after-prepare")
+            raise RuntimeError("stop-after-run-flatquant-raw")
 
-        quantizer._build_calibration_loader = fake_build_loader
-        quantizer._prepare_model = fake_prepare_model
+        quantizer._run_flatquant_raw = fake_run_flatquant_raw
 
-        with self.assertRaisesRegex(RuntimeError, "stop-after-prepare"):
+        with self.assertRaisesRegex(RuntimeError, "stop-after-run-flatquant-raw"):
             quantizer.quantize_model_sequential(["sample"], n_samples=1)
 
         self.assertTrue(seen["grad_enabled"])
-
-
-
-    def test_flatquant_prepare_model_can_load_saved_parameters_without_recalibration(self):
-        recipe = QuantizationRecipe(origin_method="flatquant", post_correction="smart_flip")
-        model = SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B"), seqlen=16)
-        model.eval = lambda: model
-        quantizer, _base_config, _correction = create_quantizer(
-            model=model,
-            tokenizer=object(),
-            device="cpu",
-            args=self.make_args(),
-            recipe=recipe,
-        )
-
-        flatquant_args = quantizer._build_flatquant_args(0)
-        quantizer._build_flatquant_args = lambda _nsamples: flatquant_args
-        quantizer._select_apply_fn = lambda: (lambda _args, model_obj: model_obj)
-
-        observed = {"load_path": None, "cali_called": False, "reparameterized": False}
-
-        def fake_load(args, model_obj, path=None):
-            observed["load_path"] = path
-            return model_obj
-
-        def fake_cali(args, model_obj, loader, device, logger=None):
-            observed["cali_called"] = True
-
-        def fake_reparameterize(model_obj):
-            observed["reparameterized"] = True
-            return model_obj
-
-        quantizer._imports = {
-            "load_flat_parameters": fake_load,
-            "cali_flat_quant": fake_cali,
-            "reparameterize_model": fake_reparameterize,
-        }
-
-        quantizer._prepare_model([], reuse_flat_parameters_path="/tmp/raw-flatquant")
-
-        self.assertEqual(observed["load_path"], "/tmp/raw-flatquant")
-        self.assertFalse(observed["cali_called"])
-        self.assertTrue(observed["reparameterized"])
 
     def test_run_flatquant_raw_returns_trainloader_and_args(self):
         recipe = QuantizationRecipe(origin_method="flatquant", post_correction="smart_flip")

@@ -62,6 +62,30 @@ def get_qwen2(model_name, hf_token):
     return model, apply_flatquant_to_qwen
 
 
+def get_mistral(model_name, hf_token):
+    skip_initialization()
+    try:
+        from transformers import MistralForCausalLM, MistralConfig
+    except ImportError:
+        logging.error("Mistral model is not available in this version of 'transformers'. Please update the library.")
+        raise ImportError("Mistral model is not available. Ensure you're using a compatible version of the 'transformers' library.")
+
+    config = MistralConfig.from_pretrained(model_name)
+    config._attn_implementation_internal = "eager"
+    model = MistralForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype='auto',
+        config=config,
+        use_auth_token=hf_token,
+        low_cpu_mem_usage=True,
+    )
+    model.seqlen = 2048
+    logging.info(f'---> Loading {model_name} Model with seq_len: {model.seqlen}')
+
+    from src.quantization.flatquant_mistral import apply_flatquant_to_mistral
+    return model, apply_flatquant_to_mistral
+
+
 def get_opt(model_name):
     skip_initialization()
     model = transformers.OPTForCausalLM.from_pretrained(model_name,
@@ -81,6 +105,8 @@ def get_model(model_name, hf_token=None):
         return get_llama(model_name, hf_token)
     elif 'qwen2.5' in lower_name or 'qwen-2.5' in lower_name:
         return get_qwen2(model_name, hf_token)
+    elif 'mistral' in lower_name:
+        return get_mistral(model_name, hf_token)
     else:
         raise ValueError(f'Unknown model {model_name}')
 

@@ -117,7 +117,6 @@ class FlatQuantRTNQuantizer:
         self.layer_stats: Dict[str, dict] = {}
         self._rtn_quantizers = {}
         self._imports = None
-        self._prepared = False
         self._post_flatquant_float_weights = {}
         self._artifact_dir: str | None = None
         self.debug_report = {
@@ -326,26 +325,6 @@ class FlatQuantRTNQuantizer:
             target = input_ids.clone()
             loader.append((input_ids, target))
         return loader
-
-    def _prepare_model(self, calibration_loader, reuse_flat_parameters_path: str | None = None):
-        if self._prepared:
-            return
-
-        imports = self._load_flatquant_imports()
-        apply_fn = self._select_apply_fn()
-        flatquant_args = self._build_flatquant_args(len(calibration_loader))
-        self.model = apply_fn(flatquant_args, self.model)
-        Path(flatquant_args.exp_dir).mkdir(parents=True, exist_ok=True)
-        if reuse_flat_parameters_path:
-            imports["load_flat_parameters"](flatquant_args, self.model, path=reuse_flat_parameters_path)
-            self._align_reused_flatquant_module_devices(self.model)
-        else:
-            imports["cali_flat_quant"](flatquant_args, self.model, calibration_loader, self.device, logger=_FlatQuantLogger())
-        imports["reparameterize_model"](self.model)
-        self.model.eval()
-
-        return trainloader, flatquant_args
-        self._prepared = True
 
     def _get_layer_inputs(self, calibration_loader):
         use_cache = self.model.config.use_cache
@@ -638,6 +617,7 @@ class FlatQuantRTNQuantizer:
 
         apply_fn = self._select_apply_fn()
         self.model = apply_fn(flatquant_args, self.model)
+        Path(flatquant_args.exp_dir).mkdir(parents=True, exist_ok=True)
 
         if reuse_flat_parameters_path:
             fq_flat_utils.load_flat_parameters(flatquant_args, self.model, path=reuse_flat_parameters_path)

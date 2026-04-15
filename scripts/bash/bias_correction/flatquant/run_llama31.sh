@@ -21,6 +21,8 @@ INCLUDE_C4="${INCLUDE_C4:-1}"
 USE_WANDB="${USE_WANDB:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-egbc}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
+RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"
+RUN_RAW_QUANTIZE="${RUN_RAW_QUANTIZE:-1}"
 
 FLOAT_ARGS=(
   --model-path "$MODEL_PATH"
@@ -113,26 +115,39 @@ add_flatquant_args() {
 
 ORIGIN_METHOD="flatquant"
 POST_CORRECTION="bias_correction"
-FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float}"
-RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw}"
+MODEL_SLUG="${MODEL_PATH##*/}"
+FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"
+RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"
 RAW_MODEL_DIR="${RAW_MODEL_DIR:-${RESULTS_MODELS_DIR}/${ORIGIN_METHOD}_raw/${RAW_RUN_NAME}}"
-CORR_RUN_NAME="${CORR_RUN_NAME:-${ORIGIN_METHOD}_bias_correction}"
+CORR_RUN_NAME="${CORR_RUN_NAME:-${ORIGIN_METHOD}_bias_correction_${MODEL_SLUG}}"
 BIAS_CORRECTION_SAMPLES="${BIAS_CORRECTION_SAMPLES:-4096}"
 BITS="${BITS:-4}"
 
-echo "==> float_model :: ${MODEL_PATH}"
-"$PYTHON_BIN" main.py float_model   "${FLOAT_ARGS[@]}"   --run-name "$FLOAT_RUN_NAME"
+if [ "$RUN_FLOAT_MODEL" = "1" ]; then
+  echo "==> float_model :: ${MODEL_PATH}"
+  "$PYTHON_BIN" main.py float_model   "${FLOAT_ARGS[@]}"   --run-name "$FLOAT_RUN_NAME"
+else
+  echo "==> skipping float_model :: ${MODEL_PATH}"
+fi
 
-echo "==> raw_quantize :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
-RAW_ARGS=(
-  "${QUANT_BASE_ARGS[@]}"
-  --origin-method "$ORIGIN_METHOD"
-  --post-correction none
-  --run-name "$RAW_RUN_NAME"
-  --bits "$BITS"
-)
-add_flatquant_args RAW_ARGS
-"$PYTHON_BIN" main.py quantize "${RAW_ARGS[@]}"
+if [ "$RUN_RAW_QUANTIZE" = "1" ]; then
+  echo "==> raw_quantize :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
+  RAW_ARGS=(
+    "${QUANT_BASE_ARGS[@]}"
+    --origin-method "$ORIGIN_METHOD"
+    --post-correction none
+    --run-name "$RAW_RUN_NAME"
+    --bits "$BITS"
+  )
+  add_flatquant_args RAW_ARGS
+  "$PYTHON_BIN" main.py quantize "${RAW_ARGS[@]}"
+else
+  if [ ! -f "$RAW_MODEL_DIR/flat_parameters.pth" ]; then
+    echo "Missing raw FlatQuant parameters at ${RAW_MODEL_DIR}/flat_parameters.pth" >&2
+    exit 1
+  fi
+  echo "==> skipping raw_quantize :: ${MODEL_PATH} :: using existing raw model at ${RAW_MODEL_DIR}"
+fi
 
 echo "==> bias_correction :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
 CORR_ARGS=(
