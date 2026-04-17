@@ -21,6 +21,7 @@ INCLUDE_C4="${INCLUDE_C4:-1}"
 USE_WANDB="${USE_WANDB:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-egbc}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
+RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"
 
 FLOAT_ARGS=(
   --model-path "$MODEL_PATH"
@@ -72,14 +73,18 @@ fi
 
 ORIGIN_METHOD="awq"
 POST_CORRECTION="bias_correction"
-FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float}"
-RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw}"
-CORR_RUN_NAME="${CORR_RUN_NAME:-${ORIGIN_METHOD}_bias_correction}"
+MODEL_SLUG="${MODEL_PATH##*/}"
+FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"
+RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"
+CORR_RUN_NAME="${CORR_RUN_NAME:-${ORIGIN_METHOD}_bias_correction_${MODEL_SLUG}}"
 BIAS_CORRECTION_SAMPLES="${BIAS_CORRECTION_SAMPLES:-4096}"
 
-
-echo "==> float_model :: ${MODEL_PATH}"
-"$PYTHON_BIN" main.py float_model   "${FLOAT_ARGS[@]}"   --run-name "$FLOAT_RUN_NAME"
+if [ "$RUN_FLOAT_MODEL" = "1" ]; then
+  echo "==> float_model :: ${MODEL_PATH}"
+  "$PYTHON_BIN" main.py float_model   "${FLOAT_ARGS[@]}"   --run-name "$FLOAT_RUN_NAME"
+else
+  echo "==> skipping float_model :: ${MODEL_PATH}"
+fi
 
 echo "==> raw_quantize :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
 RAW_ARGS=(

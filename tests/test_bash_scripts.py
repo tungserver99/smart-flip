@@ -156,6 +156,32 @@ class BashScriptTests(unittest.TestCase):
             self.assertIn('RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"', content)
             self.assertIn('CORR_RUN_NAME="${CORR_RUN_NAME:-${ORIGIN_METHOD}_bias_correction_${MODEL_SLUG}}"', content)
 
+    def test_awq_bias_correction_scripts_can_skip_float_model(self):
+        for relative_path in [
+            "scripts/bash/bias_correction/awq/run_llama3.sh",
+            "scripts/bash/bias_correction/awq/run_llama31.sh",
+            "scripts/bash/bias_correction/awq/run_mistral.sh",
+            "scripts/bash/bias_correction/awq/run_qwen25.sh",
+        ]:
+            content = Path(relative_path).read_text(encoding="utf-8")
+            self.assertIn('RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"', content)
+            self.assertIn('if [ "$RUN_FLOAT_MODEL" = "1" ]; then', content)
+            self.assertIn('echo "==> skipping float_model :: ${MODEL_PATH}"', content)
+            self.assertIn('"$PYTHON_BIN" main.py float_model', content)
+
+    def test_awq_bias_correction_scripts_include_model_slug_in_run_names(self):
+        for relative_path in [
+            "scripts/bash/bias_correction/awq/run_llama3.sh",
+            "scripts/bash/bias_correction/awq/run_llama31.sh",
+            "scripts/bash/bias_correction/awq/run_mistral.sh",
+            "scripts/bash/bias_correction/awq/run_qwen25.sh",
+        ]:
+            content = Path(relative_path).read_text(encoding="utf-8")
+            self.assertIn('MODEL_SLUG="${MODEL_PATH##*/}"', content)
+            self.assertIn('FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"', content)
+            self.assertIn('RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"', content)
+            self.assertIn('CORR_RUN_NAME="${CORR_RUN_NAME:-${ORIGIN_METHOD}_bias_correction_${MODEL_SLUG}}"', content)
+
     def test_awq_qwen_smart_flip_script_can_skip_float_model(self):
         content = Path("scripts/bash/smart_flip/awq/run_qwen25.sh").read_text(encoding="utf-8")
         self.assertIn('RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"', content)
