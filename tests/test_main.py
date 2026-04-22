@@ -304,6 +304,79 @@ class ParserModeTests(unittest.TestCase):
 
             self.assertTrue(load_calibration_data.call_args.kwargs.get('return_tensors'))
 
+    def test_run_quantize_does_not_use_device_map_auto_for_gptq(self):
+        parser = main.build_parser()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = parser.parse_args([
+                "raw_quantize",
+                "--model-path",
+                "dummy-model",
+                "--origin-method",
+                "gptq",
+                "--results-models-dir",
+                tmpdir,
+                "--results-eval-dir",
+                tmpdir,
+            ])
+
+            tokenizer = SimpleNamespace(pad_token=None, eos_token="</s>", save_pretrained=lambda _path: None)
+            model = SimpleNamespace(
+                eval=lambda: None,
+                save_pretrained=lambda _path, **_kwargs: None,
+            )
+            quantizer = SimpleNamespace(
+                quantize_model_sequential=lambda *args, **kwargs: None,
+                describe_evaluation_target=lambda: {"kind": "saved_model_dir", "path": tmpdir},
+                layer_stats={},
+            )
+
+            with patch('main.AutoTokenizer.from_pretrained', return_value=tokenizer):
+                with patch('main.AutoModelForCausalLM.from_pretrained', return_value=model) as from_pretrained:
+                    with patch('src.calibration.load_calibration_data', return_value=[torch.tensor([[1, 2, 3]])]):
+                        with patch('src.quantization.pipeline.create_quantizer', return_value=(quantizer, SimpleNamespace(__dict__={}), None)):
+                            main.run_quantize(args)
+
+            self.assertNotIn("device_map", from_pretrained.call_args.kwargs)
+
+    def test_run_quantize_saves_gptq_raw_artifact_as_saved_model_dir(self):
+        parser = main.build_parser()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = parser.parse_args([
+                "raw_quantize",
+                "--model-path",
+                "dummy-model",
+                "--origin-method",
+                "gptq",
+                "--results-models-dir",
+                tmpdir,
+                "--results-eval-dir",
+                tmpdir,
+            ])
+
+            tokenizer = SimpleNamespace(pad_token=None, eos_token="</s>", save_pretrained=lambda _path: None)
+            observed = {}
+            model = SimpleNamespace(
+                eval=lambda: None,
+                save_pretrained=lambda path, **kwargs: observed.update({"path": path, "kwargs": kwargs}),
+            )
+            quantizer = SimpleNamespace(
+                quantize_model_sequential=lambda *args, **kwargs: None,
+                layer_stats={},
+            )
+
+            with patch('main.AutoTokenizer.from_pretrained', return_value=tokenizer):
+                with patch('main.AutoModelForCausalLM.from_pretrained', return_value=model):
+                    with patch('src.calibration.load_calibration_data', return_value=[torch.tensor([[1, 2, 3]])]):
+                        with patch('src.quantization.pipeline.create_quantizer', return_value=(quantizer, SimpleNamespace(__dict__={}), None)):
+                            output_dir = main.run_quantize(args)
+
+            self.assertEqual(observed["path"], output_dir)
+            self.assertTrue(observed["kwargs"].get("safe_serialization", False))
+            metadata = main.json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["variant"], "gptq_raw")
+            self.assertEqual(metadata["evaluation_target"]["kind"], "saved_model_dir")
+            self.assertEqual(metadata["evaluation_target"]["path"], str(output_dir))
+
     def test_run_quantize_disables_safe_serialization_for_flatquant(self):
         parser = main.build_parser()
         with tempfile.TemporaryDirectory() as tmpdir:

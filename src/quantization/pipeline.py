@@ -9,6 +9,7 @@ from src.post_correction.smart_flip import SmartFlipConfig, SmartFlipCorrection
 from src.quantization.awq import AWQConfig, AWQQuantizerXL
 from src.quantization.awq_bias_correction import AWQBiasCorrectionQuantizerXL
 from src.quantization.flatquant import FlatQuantConfig, FlatQuantRTNQuantizer
+from src.quantization.gptq import GPTQConfig, GPTQQuantizer
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,20 @@ def build_flatquant_config(args) -> FlatQuantConfig:
         diag_alpha=args.flatquant_diag_alpha,
         debug_diagnostics=args.flatquant_debug_diagnostics,
         debug_sample_limit=args.flatquant_debug_sample_limit,
+    )
+
+
+def build_gptq_config(args) -> GPTQConfig:
+    return GPTQConfig(
+        bits=args.bits,
+        group_size=args.group_size,
+        percdamp=args.gptq_percdamp,
+        sym=args.gptq_sym,
+        act_order=args.gptq_act_order,
+        true_sequential=args.gptq_true_sequential,
+        static_groups=args.gptq_static_groups,
+        mse=args.gptq_mse,
+        max_bias_samples=args.bias_correction_samples,
     )
 
 
@@ -108,6 +123,17 @@ def create_quantizer(model, tokenizer, device: str, args, recipe: QuantizationRe
             post_correction=correction,
         )
         quantizer._full_args = args
+        return quantizer, config, correction
+
+    if recipe.origin_method == "gptq":
+        config = build_gptq_config(args)
+        quantizer = GPTQQuantizer(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            config=config,
+            post_correction=correction,
+        )
         return quantizer, config, correction
 
     raise NotImplementedError(f"Unsupported origin method: {recipe.origin_method}")

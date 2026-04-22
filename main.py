@@ -333,12 +333,17 @@ def run_quantize(args):
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
+        model_kwargs = {
+            "torch_dtype": torch.bfloat16,
+            "trust_remote_code": True,
+            "token": hf_token,
+        }
+        if recipe.origin_method != "gptq":
+            model_kwargs["device_map"] = "auto"
+
         model = AutoModelForCausalLM.from_pretrained(
             resolved_model,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-            token=hf_token,
+            **model_kwargs,
         )
         model.eval()
 
@@ -348,7 +353,7 @@ def run_quantize(args):
         n_samples=args.n_calib,
         seqlen=args.calib_seqlen,
         seed=args.seed,
-        return_tensors=recipe.origin_method == "flatquant",
+        return_tensors=recipe.origin_method in {"flatquant", "gptq"},
         cache_dir=args.calibration_cache_dir,
     )
 
@@ -486,7 +491,7 @@ def build_parser():
 
     def add_quant_args(cmd):
         cmd.add_argument("--model-path", required=True, help="HF model name or local model path")
-        cmd.add_argument("--origin-method", choices=["awq", "flatquant"], default="awq")
+        cmd.add_argument("--origin-method", choices=["awq", "flatquant", "gptq"], default="awq")
         cmd.add_argument("--results-models-dir", default="./results/models")
         cmd.add_argument("--calibration-cache-dir", default="./data/cache/calibration")
         cmd.add_argument("--calib-dataset", choices=["c4", "wikitext2", "wikitext2-simple"], default="c4")
@@ -503,6 +508,13 @@ def build_parser():
         cmd.add_argument("--knee-tolerance", type=float, default=0.0)
         cmd.add_argument("--max-flip-percent", type=float, default=0.05)
         cmd.add_argument("--bias-correction-samples", type=int, default=4096)
+        cmd.add_argument("--gptq-percdamp", type=float, default=0.01)
+        cmd.add_argument("--gptq-sym", action="store_true", default=False)
+        cmd.add_argument("--gptq-act-order", action="store_true", default=False)
+        cmd.add_argument("--gptq-true-sequential", action="store_true", default=True)
+        cmd.add_argument("--no-gptq-true-sequential", dest="gptq_true_sequential", action="store_false")
+        cmd.add_argument("--gptq-static-groups", action="store_true", default=False)
+        cmd.add_argument("--gptq-mse", action="store_true", default=False)
         cmd.add_argument("--flatquant-epochs", type=int, default=15)
         cmd.add_argument("--flatquant-cali-bsz", type=int, default=4)
         cmd.add_argument("--flatquant-lr", type=float, default=5e-3)

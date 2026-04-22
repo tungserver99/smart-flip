@@ -11,6 +11,10 @@ class BashScriptTests(unittest.TestCase):
             Path("smart_flip/awq/run_llama31.sh"),
             Path("smart_flip/awq/run_mistral.sh"),
             Path("smart_flip/awq/run_qwen25.sh"),
+            Path("smart_flip/gptq/run_llama3.sh"),
+            Path("smart_flip/gptq/run_llama31.sh"),
+            Path("smart_flip/gptq/run_mistral.sh"),
+            Path("smart_flip/gptq/run_qwen25.sh"),
             Path("smart_flip/flatquant/run_llama3.sh"),
             Path("smart_flip/flatquant/run_llama31.sh"),
             Path("smart_flip/flatquant/run_mistral.sh"),
@@ -19,6 +23,10 @@ class BashScriptTests(unittest.TestCase):
             Path("bias_correction/awq/run_llama31.sh"),
             Path("bias_correction/awq/run_mistral.sh"),
             Path("bias_correction/awq/run_qwen25.sh"),
+            Path("bias_correction/gptq/run_llama3.sh"),
+            Path("bias_correction/gptq/run_llama31.sh"),
+            Path("bias_correction/gptq/run_mistral.sh"),
+            Path("bias_correction/gptq/run_qwen25.sh"),
             Path("bias_correction/flatquant/run_llama3.sh"),
             Path("bias_correction/flatquant/run_llama31.sh"),
             Path("bias_correction/flatquant/run_mistral.sh"),
@@ -60,6 +68,20 @@ class BashScriptTests(unittest.TestCase):
                 '--bits "$bits"',
                 '--flatquant-epochs "$FLATQUANT_EPOCHS"',
             ],
+            "smart_flip/gptq/run_llama3.sh": [
+                'FLOAT_ARGS=(',
+                'QUANT_BASE_ARGS=(',
+                'ORIGIN_METHOD="gptq"',
+                'POST_CORRECTION="smart_flip"',
+                'GPTQ_PERCDAMP="${GPTQ_PERCDAMP:-0.01}"',
+                'KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)',
+                'MAX_FLIP_VALUES=(0.01 0.02 0.03 0.04 0.05)',
+                'for knee in "${KNEE_VALUES[@]}"; do',
+                'for max_flip in "${MAX_FLIP_VALUES[@]}"; do',
+                '--origin-method "$ORIGIN_METHOD"',
+                '--post-correction "$POST_CORRECTION"',
+                '--gptq-percdamp "$GPTQ_PERCDAMP"',
+            ],
         }
 
         for relative_path, snippets in scripts.items():
@@ -84,6 +106,16 @@ class BashScriptTests(unittest.TestCase):
                 '--origin-method "$ORIGIN_METHOD"',
                 '--post-correction "$POST_CORRECTION"',
                 '--flatquant-epochs "$FLATQUANT_EPOCHS"',
+            ],
+            "bias_correction/gptq/run_llama3.sh": [
+                'ORIGIN_METHOD="gptq"',
+                'POST_CORRECTION="bias_correction"',
+                'BIAS_CORRECTION_SAMPLES="${BIAS_CORRECTION_SAMPLES:-4096}"',
+                'GPTQ_PERCDAMP="${GPTQ_PERCDAMP:-0.01}"',
+                '--origin-method "$ORIGIN_METHOD"',
+                '--post-correction "$POST_CORRECTION"',
+                '--bias-correction-samples "$BIAS_CORRECTION_SAMPLES"',
+                '--gptq-percdamp "$GPTQ_PERCDAMP"',
             ],
         }
 
@@ -195,6 +227,38 @@ class BashScriptTests(unittest.TestCase):
         self.assertIn('FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"', content)
         self.assertIn('RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"', content)
         self.assertIn('run_name="${ORIGIN_METHOD}_smart_flip_${MODEL_SLUG}_b${bits}_k${knee}_f${max_flip}"', content)
+
+    def test_gptq_smart_flip_scripts_include_model_slug_and_gptq_flags(self):
+        for relative_path in [
+            "scripts/bash/smart_flip/gptq/run_llama3.sh",
+            "scripts/bash/smart_flip/gptq/run_llama31.sh",
+            "scripts/bash/smart_flip/gptq/run_mistral.sh",
+            "scripts/bash/smart_flip/gptq/run_qwen25.sh",
+        ]:
+            content = Path(relative_path).read_text(encoding="utf-8")
+            self.assertIn('MODEL_SLUG="${MODEL_PATH##*/}"', content)
+            self.assertIn('RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"', content)
+            self.assertIn('FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"', content)
+            self.assertIn('RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"', content)
+            self.assertIn('run_name="${ORIGIN_METHOD}_smart_flip_${MODEL_SLUG}_b${bits}_k${knee}_f${max_flip}"', content)
+            self.assertIn('GPTQ_PERCDAMP="${GPTQ_PERCDAMP:-0.01}"', content)
+            self.assertIn('--gptq-percdamp "$GPTQ_PERCDAMP"', content)
+
+    def test_gptq_bias_correction_scripts_include_model_slug_and_gptq_flags(self):
+        for relative_path in [
+            "scripts/bash/bias_correction/gptq/run_llama3.sh",
+            "scripts/bash/bias_correction/gptq/run_llama31.sh",
+            "scripts/bash/bias_correction/gptq/run_mistral.sh",
+            "scripts/bash/bias_correction/gptq/run_qwen25.sh",
+        ]:
+            content = Path(relative_path).read_text(encoding="utf-8")
+            self.assertIn('MODEL_SLUG="${MODEL_PATH##*/}"', content)
+            self.assertIn('RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"', content)
+            self.assertIn('FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"', content)
+            self.assertIn('RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"', content)
+            self.assertIn('CORR_RUN_NAME="${CORR_RUN_NAME:-${ORIGIN_METHOD}_bias_correction_${MODEL_SLUG}}"', content)
+            self.assertIn('GPTQ_PERCDAMP="${GPTQ_PERCDAMP:-0.01}"', content)
+            self.assertIn('--gptq-percdamp "$GPTQ_PERCDAMP"', content)
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ from src.post_correction.bias_correction import BiasCorrectionConfig, BiasCorrec
 from src.post_correction.smart_flip import SmartFlipConfig, SmartFlipCorrection
 from src.quantization.awq import AWQConfig, AWQQuantizerXL
 from src.quantization.flatquant import FlatQuantConfig, FlatQuantRTNQuantizer, _ActivationCollector
+from src.quantization.gptq import GPTQ
 from src.quantization.pipeline import QuantizationRecipe, create_quantizer
 
 
@@ -107,6 +108,27 @@ class QuantizationAssemblyTests(unittest.TestCase):
         self.assertIsInstance(correction.config, BiasCorrectionConfig)
         self.assertIs(quantizer.post_correction, correction)
 
+    def test_create_quantizer_builds_gptq_with_smart_flip(self):
+        recipe = QuantizationRecipe(origin_method="gptq", post_correction="smart_flip")
+        args = self.make_args()
+        args.gptq_percdamp = 0.01
+        args.gptq_sym = False
+        args.gptq_act_order = False
+        args.gptq_true_sequential = True
+        args.gptq_static_groups = False
+        args.gptq_mse = False
+        quantizer, base_config, correction = create_quantizer(
+            model=SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B")),
+            tokenizer=object(),
+            device="cpu",
+            args=args,
+            recipe=recipe,
+        )
+
+        self.assertEqual(type(quantizer).__name__, "GPTQQuantizer")
+        self.assertEqual(base_config.bits, 4)
+        self.assertIsInstance(correction, SmartFlipCorrection)
+
 
     def test_create_quantizer_builds_flatquant_with_smart_flip_post_correction(self):
         recipe = QuantizationRecipe(origin_method="flatquant", post_correction="smart_flip")
@@ -183,6 +205,58 @@ class BiasCorrectionTests(unittest.TestCase):
         bias_delta = correction.compute_bias_delta(module, quant_weight, collector, device="cpu")
 
         self.assertTrue(torch.allclose(bias_delta, torch.tensor([2.0, 3.0], dtype=torch.float32)))
+
+
+class GPTQPostCorrectionTests(unittest.TestCase):
+    def test_dead_columns_are_not_reintroduced_by_smart_flip(self):
+        layer = torch.nn.Linear(2, 2, bias=False)
+        layer.weight.data = torch.tensor([[1.25, -0.75], [0.5, 0.125]], dtype=torch.float32)
+        gptq = GPTQ(layer, smart_flip=SmartFlipCorrection())
+        gptq.quantizer = SimpleNamespace(maxq=torch.tensor(15))
+        gptq.activation_sums = torch.tensor([10.0, 0.0], dtype=torch.float64)
+        gptq.activation_count = 1
+
+        original = torch.tensor([[1.25, -0.75], [0.5, 0.125]], dtype=torch.float32)
+        quant = torch.tensor([[1.0, 0.0], [0.5, 0.0]], dtype=torch.float32)
+        pre_round = torch.tensor([[8.9, 3.8], [7.9, 4.2]], dtype=torch.float32)
+        integer = torch.tensor([[8.0, 4.0], [8.0, 4.0]], dtype=torch.float32)
+        scale = torch.ones_like(original) * 0.25
+        zero = torch.ones_like(original) * 4.0
+
+        corrected = gptq._run_post_correction(
+            original,
+            quant,
+            pre_round,
+            integer,
+            scale,
+            zero,
+            dead_mask=torch.tensor([False, True]),
+        )
+
+        self.assertTrue(torch.allclose(corrected[:, 1], torch.zeros(2, dtype=torch.float32)))
+
+    def test_gptq_grouping_falls_back_to_full_subset_for_wrapped_qwen_style_names(self):
+        from src.quantization.gptq import GPTQConfig, GPTQQuantizer
+
+        quantizer = GPTQQuantizer(
+            model=SimpleNamespace(config=SimpleNamespace(model_type="qwen2", _name_or_path="Qwen/Qwen2.5-7B")),
+            tokenizer=object(),
+            device="cpu",
+            config=GPTQConfig(),
+        )
+        full = {
+            "self_attn.q_proj.linear": object(),
+            "self_attn.k_proj.linear": object(),
+            "self_attn.v_proj.linear": object(),
+            "self_attn.o_proj.linear": object(),
+            "mlp.gate_proj.linear": object(),
+            "mlp.up_proj.linear": object(),
+            "mlp.down_proj.linear": object(),
+        }
+
+        groups = quantizer._get_sequential_groups(full)
+
+        self.assertEqual(groups, [list(full.keys())])
 
 
     def test_flatquant_model_utils_supports_mistral_repo_names(self):
