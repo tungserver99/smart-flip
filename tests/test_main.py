@@ -1,6 +1,7 @@
 import builtins
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -361,6 +362,7 @@ class ParserModeTests(unittest.TestCase):
             )
             quantizer = SimpleNamespace(
                 quantize_model_sequential=lambda *args, **kwargs: None,
+                save_raw_artifacts=lambda _path: observed.update({"raw_artifacts_path": _path}),
                 layer_stats={},
             )
 
@@ -371,11 +373,57 @@ class ParserModeTests(unittest.TestCase):
                             output_dir = main.run_quantize(args)
 
             self.assertEqual(observed["path"], output_dir)
+            self.assertEqual(observed["raw_artifacts_path"], output_dir)
             self.assertTrue(observed["kwargs"].get("safe_serialization", False))
             metadata = main.json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["variant"], "gptq_raw")
             self.assertEqual(metadata["evaluation_target"]["kind"], "saved_model_dir")
             self.assertEqual(metadata["evaluation_target"]["path"], str(output_dir))
+            self.assertEqual(metadata["gptq_raw_artifact_file"], "gptq_raw_artifacts.pt")
+
+    def test_run_quantize_reuses_saved_gptq_raw_artifacts_for_smart_flip(self):
+        parser = main.build_parser()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_dir = Path(tmpdir) / "results/models/gptq_raw/raw-run"
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            args = parser.parse_args([
+                "quantize",
+                "--model-path",
+                "dummy-model",
+                "--origin-method",
+                "gptq",
+                "--post-correction",
+                "smart_flip",
+                "--gptq-raw-path",
+                str(raw_dir),
+                "--results-models-dir",
+                tmpdir,
+                "--results-eval-dir",
+                tmpdir,
+            ])
+
+            tokenizer = SimpleNamespace(pad_token=None, eos_token="</s>", save_pretrained=lambda _path: None)
+            model = SimpleNamespace(
+                eval=lambda: None,
+                save_pretrained=lambda _path, **_kwargs: None,
+            )
+            quantizer = SimpleNamespace(
+                apply_post_correction_from_raw_artifacts=lambda raw_path: setattr(args, "_observed_raw_path", raw_path),
+                layer_stats={},
+            )
+
+            with patch('main.AutoTokenizer.from_pretrained', return_value=tokenizer) as tokenizer_loader:
+                with patch('main.AutoModelForCausalLM.from_pretrained', return_value=model) as model_loader:
+                    with patch('src.calibration.load_calibration_data') as load_calibration_data:
+                        with patch('src.quantization.pipeline.create_quantizer', return_value=(quantizer, SimpleNamespace(__dict__={}), SimpleNamespace(config=SimpleNamespace(__dict__={})))) as create_quantizer:
+                            output_dir = main.run_quantize(args)
+
+            self.assertEqual(args._observed_raw_path, str(raw_dir))
+            self.assertFalse(load_calibration_data.called)
+            self.assertEqual(tokenizer_loader.call_args.args[0], str(raw_dir))
+            self.assertEqual(model_loader.call_args.args[0], str(raw_dir))
+            self.assertEqual(output_dir.parent.name, "gptq_smart_flip")
+            self.assertTrue(create_quantizer.called)
 
     def test_run_quantize_disables_safe_serialization_for_flatquant(self):
         parser = main.build_parser()
@@ -459,6 +507,23 @@ class ParserModeTests(unittest.TestCase):
 
         self.assertEqual(args.flatquant_raw_path, "./results/models/flatquant_raw/raw-run")
 
+    def test_quantize_mode_accepts_gptq_raw_path(self):
+        parser = main.build_parser()
+
+        args = parser.parse_args([
+            "quantize",
+            "--model-path",
+            "dummy-model",
+            "--origin-method",
+            "gptq",
+            "--post-correction",
+            "smart_flip",
+            "--gptq-raw-path",
+            "./results/models/gptq_raw/raw-run",
+        ])
+
+        self.assertEqual(args.gptq_raw_path, "./results/models/gptq_raw/raw-run")
+
     def test_run_raw_quantize_keeps_flatquant_raw_model_dir(self):
         args = SimpleNamespace(origin_method="flatquant", post_correction="none")
         output_dir = main.Path('./results/models/flatquant_raw/raw-run')
@@ -472,9 +537,19 @@ class ParserModeTests(unittest.TestCase):
         evaluate_model_paths.assert_called_once_with(args, {'raw_quantize': str(output_dir)}, variant='flatquant_raw')
         rmtree.assert_not_called()
 
+    def test_run_raw_quantize_keeps_gptq_raw_model_dir(self):
+        args = SimpleNamespace(origin_method="gptq", post_correction="none")
+        output_dir = main.Path('./results/models/gptq_raw/raw-run')
+
+        with patch('main.run_quantize', return_value=output_dir) as run_quantize:
+            with patch('main.evaluate_model_paths') as evaluate_model_paths:
+                with patch('main.shutil.rmtree') as rmtree:
+                    main.run_raw_quantize(args)
+
+        run_quantize.assert_called_once_with(args)
+        evaluate_model_paths.assert_called_once_with(args, {'raw_quantize': str(output_dir)}, variant='gptq_raw')
+        rmtree.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
-
-
-
 

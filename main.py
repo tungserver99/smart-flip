@@ -308,12 +308,13 @@ def evaluate_model_paths(args, model_paths: dict[str, str], variant: str = "eval
 def run_quantize(args):
     from src.calibration import load_calibration_data
     from src.quantization.pipeline import QuantizationRecipe, create_quantizer
+    from src.quantization.gptq import GPTQ_RAW_ARTIFACT_FILENAME
 
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    resolved_model = resolve_model_reference(args.model_path, models_root=args.models_root)
-    args.resolved_source_model = resolved_model
+    resolved_source_model = resolve_model_reference(args.model_path, models_root=args.models_root)
+    args.resolved_source_model = resolved_source_model
     recipe = QuantizationRecipe(
         origin_method=args.origin_method,
         post_correction=args.post_correction,
@@ -321,7 +322,9 @@ def run_quantize(args):
     run_name = resolve_run_name(args, recipe.variant_name)
     output_dir = build_output_dir(args.results_models_dir, recipe.variant_name, run_name)
     flatquant_raw_path = resolve_flatquant_raw_path(args, recipe)
+    gptq_raw_path = resolve_gptq_raw_path(args, recipe)
     hf_token = resolve_hf_token()
+    resolved_model = gptq_raw_path if gptq_raw_path is not None else resolved_source_model
 
     if recipe.origin_method == "flatquant":
         from flatquant import model_utils as fq_model_utils
@@ -347,15 +350,17 @@ def run_quantize(args):
         )
         model.eval()
 
-    calibration_data = load_calibration_data(
-        args.calib_dataset,
-        tokenizer,
-        n_samples=args.n_calib,
-        seqlen=args.calib_seqlen,
-        seed=args.seed,
-        return_tensors=recipe.origin_method in {"flatquant", "gptq"},
-        cache_dir=args.calibration_cache_dir,
-    )
+    calibration_data = []
+    if gptq_raw_path is None:
+        calibration_data = load_calibration_data(
+            args.calib_dataset,
+            tokenizer,
+            n_samples=args.n_calib,
+            seqlen=args.calib_seqlen,
+            seed=args.seed,
+            return_tensors=recipe.origin_method in {"flatquant", "gptq"},
+            cache_dir=args.calibration_cache_dir,
+        )
 
     quantizer, base_config, correction = create_quantizer(
         model=model,
@@ -371,6 +376,8 @@ def run_quantize(args):
             n_samples=args.n_calib,
             reuse_flat_parameters_path=flatquant_raw_path,
         )
+    elif recipe.origin_method == "gptq" and gptq_raw_path is not None:
+        quantizer.apply_post_correction_from_raw_artifacts(gptq_raw_path)
     else:
         quantizer.quantize_model_sequential(calibration_data, n_samples=args.n_calib)
     if recipe.origin_method == "flatquant":
@@ -378,14 +385,18 @@ def run_quantize(args):
 
     model.save_pretrained(output_dir, safe_serialization=recipe.origin_method != "flatquant")
     tokenizer.save_pretrained(output_dir)
+    if recipe.origin_method == "gptq" and recipe.post_correction == "none":
+        quantizer.save_raw_artifacts(output_dir)
 
     metadata = {
         "variant": recipe.variant_name,
         "origin_method": recipe.origin_method,
         "post_correction": recipe.post_correction,
         "source_model": args.model_path,
-        "resolved_source_model": resolved_model,
+        "resolved_source_model": resolved_source_model,
         "flatquant_raw_path": flatquant_raw_path,
+        "gptq_raw_path": gptq_raw_path,
+        "gptq_raw_artifact_file": GPTQ_RAW_ARTIFACT_FILENAME if recipe.origin_method == "gptq" and recipe.post_correction == "none" else None,
         "config": build_metadata_config(args),
         "base_config": base_config.__dict__,
         "post_correction_config": correction.config.__dict__ if correction is not None else None,
@@ -407,13 +418,22 @@ def run_float_model(args):
 
 
 def should_preserve_quantized_output(recipe) -> bool:
-    return recipe.origin_method == "flatquant" and recipe.post_correction == "none"
+    return recipe.origin_method in {"flatquant", "gptq"} and recipe.post_correction == "none"
 
 
 def resolve_flatquant_raw_path(args, recipe):
     if recipe.origin_method != "flatquant" or recipe.post_correction == "none":
         return None
     return getattr(args, "flatquant_raw_path", None)
+
+
+def resolve_gptq_raw_path(args, recipe):
+    if recipe.origin_method != "gptq" or recipe.post_correction == "none":
+        return None
+    raw_path = getattr(args, "gptq_raw_path", None)
+    if raw_path is None:
+        return None
+    return resolve_model_reference(raw_path, models_root=args.models_root)
 
 def build_quantized_model_key(post_correction: str) -> str:
     if post_correction == "none":
@@ -541,16 +561,19 @@ def build_parser():
     add_quant_args(quantize)
     quantize.add_argument("--post-correction", choices=["none", "smart_flip", "bias_correction"], default="none")
     quantize.add_argument("--flatquant-raw-path", default=None)
+    quantize.add_argument("--gptq-raw-path", default=None)
     quantize.set_defaults(func=run_quantize_with_evaluation)
 
     raw_quantize = subparsers.add_parser("raw_quantize", help="Quantize with raw AWQ, then evaluate that model")
     add_quant_args(raw_quantize)
     raw_quantize.add_argument("--flatquant-raw-path", default=None)
+    raw_quantize.add_argument("--gptq-raw-path", default=None)
     raw_quantize.set_defaults(func=run_raw_quantize, post_correction="none")
 
     flip_quantize = subparsers.add_parser("flip_quantize", help="Quantize with AWQ plus smart flip, then evaluate that model")
     add_quant_args(flip_quantize)
     flip_quantize.add_argument("--flatquant-raw-path", default=None)
+    flip_quantize.add_argument("--gptq-raw-path", default=None)
     flip_quantize.set_defaults(func=run_flip_quantize, post_correction="smart_flip")
 
     compare_all = subparsers.add_parser("compare_all", help="Evaluate float_model, raw_quantize, and flip_quantize together")
@@ -574,4 +597,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

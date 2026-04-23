@@ -22,6 +22,7 @@ USE_WANDB="${USE_WANDB:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-egbc}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"
+RUN_RAW_QUANTIZE="${RUN_RAW_QUANTIZE:-1}"
 
 FLOAT_ARGS=(
   --model-path "$MODEL_PATH"
@@ -105,6 +106,7 @@ POST_CORRECTION="bias_correction"
 MODEL_SLUG="${MODEL_PATH##*/}"
 FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"
 RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"
+RAW_MODEL_DIR="${RAW_MODEL_DIR:-${RESULTS_MODELS_DIR}/${ORIGIN_METHOD}_raw/${RAW_RUN_NAME}}"
 CORR_RUN_NAME="${CORR_RUN_NAME:-${ORIGIN_METHOD}_bias_correction_${MODEL_SLUG}}"
 BIAS_CORRECTION_SAMPLES="${BIAS_CORRECTION_SAMPLES:-4096}"
 
@@ -115,16 +117,24 @@ else
   echo "==> skipping float_model :: ${MODEL_PATH}"
 fi
 
-echo "==> raw_quantize :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
-RAW_ARGS=(
-  "${QUANT_BASE_ARGS[@]}"
-  --origin-method "$ORIGIN_METHOD"
-  --post-correction none
-  --run-name "$RAW_RUN_NAME"
-  --bits "4"
-)
-add_gptq_args RAW_ARGS
-"$PYTHON_BIN" main.py quantize "${RAW_ARGS[@]}"
+if [ "$RUN_RAW_QUANTIZE" = "1" ]; then
+  echo "==> raw_quantize :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
+  RAW_ARGS=(
+    "${QUANT_BASE_ARGS[@]}"
+    --origin-method "$ORIGIN_METHOD"
+    --post-correction none
+    --run-name "$RAW_RUN_NAME"
+    --bits "4"
+  )
+  add_gptq_args RAW_ARGS
+  "$PYTHON_BIN" main.py quantize "${RAW_ARGS[@]}"
+else
+  if [ ! -f "$RAW_MODEL_DIR/gptq_raw_artifacts.pt" ]; then
+    echo "Missing raw GPTQ artifacts at ${RAW_MODEL_DIR}/gptq_raw_artifacts.pt" >&2
+    exit 1
+  fi
+  echo "==> skipping raw_quantize :: ${MODEL_PATH} :: using existing raw model at ${RAW_MODEL_DIR}"
+fi
 
 echo "==> bias_correction :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
 CORR_ARGS=(
@@ -132,6 +142,7 @@ CORR_ARGS=(
   --origin-method "$ORIGIN_METHOD"
   --post-correction "$POST_CORRECTION"
   --bias-correction-samples "$BIAS_CORRECTION_SAMPLES"
+  --gptq-raw-path "$RAW_MODEL_DIR"
   --run-name "$CORR_RUN_NAME"
   --bits "4"
 )

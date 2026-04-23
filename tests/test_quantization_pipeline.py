@@ -258,6 +258,108 @@ class GPTQPostCorrectionTests(unittest.TestCase):
 
         self.assertEqual(groups, [list(full.keys())])
 
+    def test_gptq_quantizer_save_and_load_raw_artifacts_round_trip(self):
+        from src.quantization.gptq import GPTQConfig, GPTQQuantizer
+
+        quantizer = GPTQQuantizer(
+            model=SimpleNamespace(config=SimpleNamespace(model_type="llama", _name_or_path="meta-llama/Llama-3-8B")),
+            tokenizer=object(),
+            device="cpu",
+            config=GPTQConfig(),
+        )
+        quantizer.raw_artifacts = {
+            "model.layers.0.self_attn.q_proj": {
+                "activation_count": 1,
+                "activation_sums": torch.tensor([1.0, 2.0], dtype=torch.float64),
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quantizer.save_raw_artifacts(tmpdir)
+            loaded = quantizer.load_raw_artifacts(tmpdir)
+
+        self.assertEqual(loaded["model.layers.0.self_attn.q_proj"]["activation_count"], 1)
+        self.assertTrue(
+            torch.allclose(
+                loaded["model.layers.0.self_attn.q_proj"]["activation_sums"],
+                torch.tensor([1.0, 2.0], dtype=torch.float64),
+            )
+        )
+
+    def test_apply_saved_raw_artifact_matches_direct_smart_flip_post_correction(self):
+        layer = torch.nn.Linear(2, 2, bias=False)
+        layer.weight.data = torch.tensor([[1.25, -0.75], [0.5, 0.125]], dtype=torch.float32)
+
+        base_gptq = GPTQ(layer)
+        base_gptq.quantizer = SimpleNamespace(maxq=torch.tensor(15))
+        original = torch.tensor([[1.25, -0.75], [0.5, 0.125]], dtype=torch.float32)
+        quant = torch.tensor([[1.0, 0.0], [0.5, 0.0]], dtype=torch.float32)
+        pre_round = torch.tensor([[8.9, 3.8], [7.9, 4.2]], dtype=torch.float32)
+        integer = torch.tensor([[8.0, 4.0], [8.0, 4.0]], dtype=torch.float32)
+        scale = torch.ones_like(original) * 0.25
+        zero = torch.ones_like(original) * 4.0
+        dead_mask = torch.tensor([False, True])
+
+        quant_state = base_gptq._build_quant_state(original, pre_round, integer, scale, zero)
+        artifact = {
+            "quant_state": base_gptq._serialize_quant_state(quant_state),
+            "activation_sums": torch.tensor([10.0, 0.0], dtype=torch.float64),
+            "activation_count": 1,
+            "activation_samples": None,
+            "dead": dead_mask,
+        }
+
+        expected_layer = torch.nn.Linear(2, 2, bias=False)
+        expected_layer.weight.data = quant.clone()
+        expected_gptq = GPTQ(expected_layer, smart_flip=SmartFlipCorrection())
+        expected_gptq.quantizer = SimpleNamespace(maxq=torch.tensor(15))
+        expected_gptq.activation_sums = artifact["activation_sums"]
+        expected_gptq.activation_count = artifact["activation_count"]
+        expected = expected_gptq._run_post_correction(
+            original,
+            quant,
+            pre_round,
+            integer,
+            scale,
+            zero,
+            dead_mask=dead_mask,
+        )
+
+        actual_layer = torch.nn.Linear(2, 2, bias=False)
+        actual_layer.weight.data = quant.clone()
+        actual_gptq = GPTQ(actual_layer, smart_flip=SmartFlipCorrection())
+        actual_gptq.apply_saved_raw_artifact(artifact)
+
+        self.assertTrue(torch.allclose(actual_layer.weight.data, expected))
+
+    def test_apply_saved_raw_artifact_applies_bias_correction_without_requantizing(self):
+        layer = torch.nn.Linear(2, 2, bias=False)
+        original = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        quant = torch.zeros_like(original)
+        pre_round = torch.zeros_like(original)
+        integer = torch.zeros_like(original)
+        scale = torch.ones_like(original)
+        zero = torch.zeros_like(original)
+
+        base_gptq = GPTQ(layer)
+        base_gptq.quantizer = SimpleNamespace(maxq=torch.tensor(15))
+        quant_state = base_gptq._build_quant_state(original, pre_round, integer, scale, zero)
+        activation_samples = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+        artifact = {
+            "quant_state": base_gptq._serialize_quant_state(quant_state),
+            "activation_sums": activation_samples.sum(dim=0, dtype=torch.float64),
+            "activation_count": activation_samples.shape[0],
+            "activation_samples": activation_samples,
+            "dead": torch.tensor([False, False]),
+        }
+
+        gptq = GPTQ(layer, bias_correction=BiasCorrectionCorrection(BiasCorrectionConfig(max_samples=32)))
+        gptq.apply_saved_raw_artifact(artifact)
+
+        self.assertTrue(torch.allclose(layer.weight.data, quant))
+        self.assertIsNotNone(layer.bias)
+        self.assertTrue(torch.allclose(layer.bias.detach(), torch.tensor([2.0, 3.0], dtype=torch.float32)))
+
 
     def test_flatquant_model_utils_supports_mistral_repo_names(self):
         mistral_apply = object()
@@ -742,7 +844,6 @@ class GPTQPostCorrectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
 
 

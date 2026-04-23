@@ -11,6 +11,7 @@ class BashScriptTests(unittest.TestCase):
             Path("smart_flip/awq/run_llama31.sh"),
             Path("smart_flip/awq/run_mistral.sh"),
             Path("smart_flip/awq/run_qwen25.sh"),
+            Path("smart_flip/gptq/run_all_models_single_setting.sh"),
             Path("smart_flip/gptq/run_llama3.sh"),
             Path("smart_flip/gptq/run_llama31.sh"),
             Path("smart_flip/gptq/run_mistral.sh"),
@@ -238,10 +239,15 @@ class BashScriptTests(unittest.TestCase):
             content = Path(relative_path).read_text(encoding="utf-8")
             self.assertIn('MODEL_SLUG="${MODEL_PATH##*/}"', content)
             self.assertIn('RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"', content)
+            self.assertIn('RUN_RAW_QUANTIZE="${RUN_RAW_QUANTIZE:-1}"', content)
             self.assertIn('FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"', content)
             self.assertIn('RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"', content)
+            self.assertIn('RAW_MODEL_DIR="${RAW_MODEL_DIR:-${RESULTS_MODELS_DIR}/${ORIGIN_METHOD}_raw/${RAW_RUN_NAME}}"', content)
             self.assertIn('run_name="${ORIGIN_METHOD}_smart_flip_${MODEL_SLUG}_b${bits}_k${knee}_f${max_flip}"', content)
             self.assertIn('GPTQ_PERCDAMP="${GPTQ_PERCDAMP:-0.01}"', content)
+            self.assertIn('if [ "$RUN_RAW_QUANTIZE" = "1" ]; then', content)
+            self.assertIn('echo "==> skipping raw_quantize :: ${MODEL_PATH} :: using existing raw model at ${RAW_MODEL_DIR}"', content)
+            self.assertIn('--gptq-raw-path "$RAW_MODEL_DIR"', content)
             self.assertIn('--gptq-percdamp "$GPTQ_PERCDAMP"', content)
 
     def test_gptq_bias_correction_scripts_include_model_slug_and_gptq_flags(self):
@@ -254,13 +260,37 @@ class BashScriptTests(unittest.TestCase):
             content = Path(relative_path).read_text(encoding="utf-8")
             self.assertIn('MODEL_SLUG="${MODEL_PATH##*/}"', content)
             self.assertIn('RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"', content)
+            self.assertIn('RUN_RAW_QUANTIZE="${RUN_RAW_QUANTIZE:-1}"', content)
             self.assertIn('FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"', content)
             self.assertIn('RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"', content)
+            self.assertIn('RAW_MODEL_DIR="${RAW_MODEL_DIR:-${RESULTS_MODELS_DIR}/${ORIGIN_METHOD}_raw/${RAW_RUN_NAME}}"', content)
             self.assertIn('CORR_RUN_NAME="${CORR_RUN_NAME:-${ORIGIN_METHOD}_bias_correction_${MODEL_SLUG}}"', content)
             self.assertIn('GPTQ_PERCDAMP="${GPTQ_PERCDAMP:-0.01}"', content)
+            self.assertIn('if [ "$RUN_RAW_QUANTIZE" = "1" ]; then', content)
+            self.assertIn('echo "==> skipping raw_quantize :: ${MODEL_PATH} :: using existing raw model at ${RAW_MODEL_DIR}"', content)
+            self.assertIn('--gptq-raw-path "$RAW_MODEL_DIR"', content)
             self.assertIn('--gptq-percdamp "$GPTQ_PERCDAMP"', content)
+
+    def test_gptq_all_models_single_setting_script_runs_fixed_smart_flip_config(self):
+        content = Path("scripts/bash/smart_flip/gptq/run_all_models_single_setting.sh").read_text(encoding="utf-8")
+        for snippet in [
+            'MODEL_PATHS=(',
+            '"meta-llama/Meta-Llama-3-8B"',
+            '"meta-llama/Llama-3.1-8B"',
+            '"mistralai/Mistral-7B-v0.3"',
+            '"Qwen/Qwen2.5-7B"',
+            'RUN_RAW_QUANTIZE="${RUN_RAW_QUANTIZE:-1}"',
+            'KNEE_TOLERANCE="${KNEE_TOLERANCE:-0.0}"',
+            'MAX_FLIP_PERCENT="${MAX_FLIP_PERCENT:-0.05}"',
+            '--post-correction none',
+            '--post-correction "$POST_CORRECTION"',
+            '--gptq-raw-path "$RAW_MODEL_DIR"',
+            '--knee-tolerance "$KNEE_TOLERANCE"',
+            '--max-flip-percent "$MAX_FLIP_PERCENT"',
+            'for MODEL_PATH in "${MODEL_PATHS[@]}"; do',
+            '"$PYTHON_BIN" main.py quantize',
+        ]:
+            self.assertIn(snippet, content)
 
 if __name__ == "__main__":
     unittest.main()
-
-

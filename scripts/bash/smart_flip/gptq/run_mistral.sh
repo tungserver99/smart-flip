@@ -22,6 +22,7 @@ USE_WANDB="${USE_WANDB:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-egbc}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
 RUN_FLOAT_MODEL="${RUN_FLOAT_MODEL:-1}"
+RUN_RAW_QUANTIZE="${RUN_RAW_QUANTIZE:-1}"
 
 FLOAT_ARGS=(
   --model-path "$MODEL_PATH"
@@ -105,6 +106,7 @@ POST_CORRECTION="smart_flip"
 MODEL_SLUG="${MODEL_PATH##*/}"
 FLOAT_RUN_NAME="${FLOAT_RUN_NAME:-${ORIGIN_METHOD}_float_${MODEL_SLUG}}"
 RAW_RUN_NAME="${RAW_RUN_NAME:-${ORIGIN_METHOD}_raw_${MODEL_SLUG}}"
+RAW_MODEL_DIR="${RAW_MODEL_DIR:-${RESULTS_MODELS_DIR}/${ORIGIN_METHOD}_raw/${RAW_RUN_NAME}}"
 BITS_VALUES=(4)
 KNEE_VALUES=(0.0 0.01 0.02 0.03 0.04 0.05)
 MAX_FLIP_VALUES=(0.01 0.02 0.03 0.04 0.05)
@@ -116,16 +118,24 @@ else
   echo "==> skipping float_model :: ${MODEL_PATH}"
 fi
 
-echo "==> raw_quantize :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
-RAW_ARGS=(
-  "${QUANT_BASE_ARGS[@]}"
-  --origin-method "$ORIGIN_METHOD"
-  --post-correction none
-  --run-name "$RAW_RUN_NAME"
-  --bits "4"
-)
-add_gptq_args RAW_ARGS
-"$PYTHON_BIN" main.py quantize "${RAW_ARGS[@]}"
+if [ "$RUN_RAW_QUANTIZE" = "1" ]; then
+  echo "==> raw_quantize :: ${MODEL_PATH} :: origin=${ORIGIN_METHOD}"
+  RAW_ARGS=(
+    "${QUANT_BASE_ARGS[@]}"
+    --origin-method "$ORIGIN_METHOD"
+    --post-correction none
+    --run-name "$RAW_RUN_NAME"
+    --bits "4"
+  )
+  add_gptq_args RAW_ARGS
+  "$PYTHON_BIN" main.py quantize "${RAW_ARGS[@]}"
+else
+  if [ ! -f "$RAW_MODEL_DIR/gptq_raw_artifacts.pt" ]; then
+    echo "Missing raw GPTQ artifacts at ${RAW_MODEL_DIR}/gptq_raw_artifacts.pt" >&2
+    exit 1
+  fi
+  echo "==> skipping raw_quantize :: ${MODEL_PATH} :: using existing raw model at ${RAW_MODEL_DIR}"
+fi
 
 for bits in "${BITS_VALUES[@]}"; do
   for knee in "${KNEE_VALUES[@]}"; do
@@ -139,6 +149,7 @@ for bits in "${BITS_VALUES[@]}"; do
         --bits "$bits"
         --knee-tolerance "$knee"
         --max-flip-percent "$max_flip"
+        --gptq-raw-path "$RAW_MODEL_DIR"
         --run-name "$run_name"
       )
       add_gptq_args QUANT_ARGS

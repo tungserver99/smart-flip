@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional
 
 import torch
@@ -16,6 +17,8 @@ from src.quantization.state import IntegerQuantizedTensorState
 
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
+
+GPTQ_RAW_ARTIFACT_FILENAME = "gptq_raw_artifacts.pt"
 
 
 def quantize(x, scale, zero, maxq):
@@ -176,6 +179,7 @@ class GPTQ:
             "bias_delta_norm": 0.0,
         }
         self.dead = None
+        self.raw_artifact = None
 
     def _reshape_inputs(self, inp):
         if len(inp.shape) == 2:
@@ -286,6 +290,106 @@ class GPTQ:
             "bias_delta_norm": bias_delta_norm,
         }
         return corrected_weights
+
+    def _serialize_quant_state(self, quant_state: IntegerQuantizedTensorState) -> dict:
+        return {
+            "float_weights": quant_state.float_weights.detach().cpu(),
+            "pre_round": quant_state.pre_round.detach().cpu(),
+            "integer_weights": quant_state.integer_weights.detach().cpu(),
+            "scale": quant_state.scale.detach().cpu(),
+            "zero_point": quant_state.zero_point.detach().cpu(),
+            "max_int": quant_state.max_int,
+            "min_int": quant_state.min_int,
+            "in_features": quant_state.in_features,
+            "padded_in_features": quant_state.padded_in_features,
+            "original_dtype": quant_state.original_dtype,
+        }
+
+    @staticmethod
+    def _deserialize_quant_state(payload: dict, device: torch.device | str) -> IntegerQuantizedTensorState:
+        return IntegerQuantizedTensorState(
+            float_weights=payload["float_weights"].to(device),
+            pre_round=payload["pre_round"].to(device),
+            integer_weights=payload["integer_weights"].to(device),
+            scale=payload["scale"].to(device),
+            zero_point=payload["zero_point"].to(device),
+            max_int=int(payload["max_int"]),
+            min_int=int(payload["min_int"]),
+            in_features=int(payload["in_features"]),
+            padded_in_features=int(payload["padded_in_features"]),
+            original_dtype=payload["original_dtype"],
+        )
+
+    def _reshape_for_layer(self, weights: torch.Tensor) -> torch.Tensor:
+        if isinstance(self.layer, transformers.Conv1D):
+            weights = weights.t()
+        return weights.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype)
+
+    def apply_saved_raw_artifact(self, artifact: dict):
+        quant_state = self._deserialize_quant_state(artifact["quant_state"], self.dev)
+        original_weights = quant_state.float_weights.to(device=self.dev, dtype=torch.float32)
+        quant_weights = quant_state.dequantize().to(device=self.dev, dtype=torch.float32)
+        dead_mask = artifact.get("dead")
+        if dead_mask is not None:
+            dead_mask = dead_mask.to(device=self.dev)
+
+        activation_sums = artifact.get("activation_sums")
+        if activation_sums is not None:
+            self.activation_sums = activation_sums.to(device="cpu", dtype=torch.float64)
+        activation_count = artifact.get("activation_count")
+        if activation_count is not None:
+            self.activation_count = int(activation_count)
+        activation_samples = artifact.get("activation_samples")
+        if activation_samples is not None:
+            self.activation_samples = activation_samples.to(device="cpu", dtype=torch.float32)
+
+        corrected_weights = quant_weights
+        outlier_percent = 0.0
+        flip_stats = {"total": 0}
+        bias_delta_norm = 0.0
+
+        if self.smart_flip is not None and self.activation_count > 0:
+            act_mean = (self.activation_sums / self.activation_count).to(device=self.dev, dtype=quant_state.scale.dtype)
+            if dead_mask is not None and torch.any(dead_mask):
+                act_mean = act_mean.clone()
+                act_mean[dead_mask] = 0
+            act_mean = self.smart_flip.prepare_activation_means(act_mean)
+            corrected_weights, outlier_percent, flip_stats = self.smart_flip.apply(quant_state, act_mean)
+            if dead_mask is not None and torch.any(dead_mask):
+                corrected_weights[:, dead_mask] = quant_weights[:, dead_mask]
+
+        if self.bias_correction is not None and isinstance(self.layer, nn.Linear):
+            original_for_bias = original_weights
+            if quant_state.padded_in_features > quant_state.in_features:
+                original_for_bias = original_for_bias[:, : quant_state.in_features]
+                corrected_for_bias = corrected_weights[:, : quant_state.in_features]
+            else:
+                corrected_for_bias = corrected_weights
+
+            self.layer.weight.data = original_for_bias.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype)
+            bias_delta = self.bias_correction.compute_bias_delta(
+                self.layer,
+                corrected_for_bias,
+                self.activation_samples,
+                device=str(self.dev),
+            )
+            self.bias_correction.apply_bias_delta(
+                self.layer,
+                bias_delta,
+                device=str(self.dev),
+                dtype=self.layer.weight.data.dtype,
+            )
+            bias_delta_norm = float(bias_delta.norm().item())
+
+        final_weights = corrected_weights
+        if quant_state.padded_in_features > quant_state.in_features:
+            final_weights = final_weights[:, : quant_state.in_features]
+        self.layer.weight.data = self._reshape_for_layer(final_weights)
+        self.last_stats = {
+            "outlier_percent": outlier_percent,
+            "flip_stats": flip_stats,
+            "bias_delta_norm": bias_delta_norm,
+        }
 
     def fasterquant(
         self,
@@ -419,6 +523,15 @@ class GPTQ:
             W_orig = W_orig[:, invperm]
             dead = dead[invperm]
 
+        raw_quant_state = self._build_quant_state(W_orig, Q_pre, Q_int, Q_scale, Q_zero)
+        self.raw_artifact = {
+            "quant_state": self._serialize_quant_state(raw_quant_state),
+            "activation_sums": self.activation_sums.detach().cpu(),
+            "activation_count": int(self.activation_count),
+            "activation_samples": None if self.activation_samples is None else self.activation_samples.detach().cpu(),
+            "dead": dead.detach().cpu(),
+        }
+
         if self.smart_flip is not None or self.bias_correction is not None:
             Q = self._run_post_correction(W_orig, Q, Q_pre, Q_int, Q_scale, Q_zero, dead_mask=dead)
 
@@ -448,6 +561,7 @@ class GPTQQuantizer:
         self.config = config or GPTQConfig()
         self.post_correction = post_correction
         self.layer_stats: Dict[str, dict] = {}
+        self.raw_artifacts: Dict[str, dict] = {}
 
         print("\n[GPTQ Quantizer Initialized]")
         print(f"  Config: {self.config}")
@@ -608,7 +722,10 @@ class GPTQQuantizer:
                         actorder=self.config.act_order,
                         static_groups=self.config.static_groups,
                     )
-                    self.layer_stats[f"model.layers.{layer_idx}.{name}"] = gptq_layer.last_stats
+                    layer_key = f"model.layers.{layer_idx}.{name}"
+                    self.layer_stats[layer_key] = gptq_layer.last_stats
+                    if gptq_layer.raw_artifact is not None:
+                        self.raw_artifacts[layer_key] = gptq_layer.raw_artifact
                     gptq_layer.free()
 
             for sample_idx in range(nsamples):
@@ -623,3 +740,37 @@ class GPTQQuantizer:
         print("\n" + "=" * 80)
         print("GPTQ Quantization Complete")
         print("=" * 80)
+
+    def save_raw_artifacts(self, output_dir: str | Path):
+        artifact_path = Path(output_dir) / GPTQ_RAW_ARTIFACT_FILENAME
+        torch.save(self.raw_artifacts, artifact_path)
+
+    def load_raw_artifacts(self, raw_model_dir: str | Path) -> dict:
+        artifact_path = Path(raw_model_dir) / GPTQ_RAW_ARTIFACT_FILENAME
+        return torch.load(artifact_path, map_location="cpu")
+
+    @torch.no_grad()
+    def apply_post_correction_from_raw_artifacts(self, raw_model_dir: str | Path):
+        if self.post_correction is None:
+            raise ValueError("GPTQ raw artifact reuse requires a post correction")
+
+        artifacts = self.load_raw_artifacts(raw_model_dir)
+        layers = self._get_layers()
+        for layer_idx in range(len(layers)):
+            layer = layers[layer_idx]
+            full = self.find_layers(layer)
+            for name, module in full.items():
+                layer_key = f"model.layers.{layer_idx}.{name}"
+                artifact = artifacts.get(layer_key)
+                if artifact is None:
+                    continue
+                smart_flip = self.post_correction if isinstance(self.post_correction, SmartFlipCorrection) else None
+                bias_correction = self.post_correction if isinstance(self.post_correction, BiasCorrectionCorrection) else None
+                gptq_layer = GPTQ(
+                    module,
+                    smart_flip=smart_flip,
+                    bias_correction=bias_correction,
+                    max_bias_samples=self.config.max_bias_samples,
+                )
+                gptq_layer.apply_saved_raw_artifact(artifact)
+                self.layer_stats[layer_key] = gptq_layer.last_stats
