@@ -250,6 +250,26 @@ class BashScriptTests(unittest.TestCase):
             self.assertIn('--gptq-raw-path "$RAW_MODEL_DIR"', content)
             self.assertIn('--gptq-percdamp "$GPTQ_PERCDAMP"', content)
 
+    def test_gptq_llama_scripts_default_to_llama_friendly_settings(self):
+        for relative_path in [
+            "scripts/bash/smart_flip/gptq/run_llama3.sh",
+            "scripts/bash/smart_flip/gptq/run_llama31.sh",
+            "scripts/bash/bias_correction/gptq/run_llama3.sh",
+            "scripts/bash/bias_correction/gptq/run_llama31.sh",
+        ]:
+            content = Path(relative_path).read_text(encoding="utf-8")
+            self.assertIn('GROUP_SIZE="${GROUP_SIZE:--1}"', content)
+            self.assertIn('GPTQ_SYM="${GPTQ_SYM:-0}"', content)
+            self.assertIn('GPTQ_ACT_ORDER="${GPTQ_ACT_ORDER:-1}"', content)
+            self.assertIn('--group-size "$GROUP_SIZE"', content)
+
+    def test_gptq_batch_script_defaults_to_llama_friendly_settings(self):
+        content = Path("scripts/bash/smart_flip/gptq/run_all_models_single_setting.sh").read_text(encoding="utf-8")
+        self.assertIn('GROUP_SIZE="${GROUP_SIZE:--1}"', content)
+        self.assertIn('GPTQ_SYM="${GPTQ_SYM:-0}"', content)
+        self.assertIn('GPTQ_ACT_ORDER="${GPTQ_ACT_ORDER:-1}"', content)
+        self.assertIn('--group-size "$GROUP_SIZE"', content)
+
     def test_gptq_bias_correction_scripts_include_model_slug_and_gptq_flags(self):
         for relative_path in [
             "scripts/bash/bias_correction/gptq/run_llama3.sh",
