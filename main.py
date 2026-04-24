@@ -385,8 +385,8 @@ def run_quantize(args):
 
     model.save_pretrained(output_dir, safe_serialization=recipe.origin_method != "flatquant")
     tokenizer.save_pretrained(output_dir)
-    if recipe.origin_method == "gptq" and recipe.post_correction == "none":
-        quantizer.save_raw_artifacts(output_dir)
+    # if recipe.origin_method == "gptq" and recipe.post_correction == "none":
+    #     quantizer.save_raw_artifacts(output_dir)
 
     metadata = {
         "variant": recipe.variant_name,

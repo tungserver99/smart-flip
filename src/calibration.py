@@ -4,12 +4,103 @@ Calibration data loaders reused from the original experimental scripts.
 
 from __future__ import annotations
 
+import hashlib
 import pickle
 import random
+import re
 from pathlib import Path
 
 import torch
 from datasets import load_dataset
+
+
+def _normalize_cache_identity(value: object) -> str:
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value).strip())
+    return text.strip("-")[:48] or "unknown"
+
+
+def _get_tokenizer_identity(tokenizer) -> str:
+    name = getattr(tokenizer, "name_or_path", None) or getattr(tokenizer, "name", None) or type(tokenizer).__name__
+    vocab_size = _get_tokenizer_vocab_size(tokenizer)
+    fingerprint_source = "|".join(
+        [
+            str(name),
+            str(vocab_size),
+            str(getattr(tokenizer, "is_fast", None)),
+            str(getattr(tokenizer, "vocab_files_names", None)),
+        ]
+    )
+    digest = hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()[:10]
+    return f"{_normalize_cache_identity(name)}-{digest}"
+
+
+def _get_tokenizer_vocab_size(tokenizer) -> int | None:
+    vocab_size = getattr(tokenizer, "vocab_size", None)
+    if isinstance(vocab_size, int):
+        return vocab_size
+    try:
+        computed_size = len(tokenizer)
+    except (TypeError, AttributeError):
+        return None
+    return computed_size if isinstance(computed_size, int) else None
+
+
+def _calibration_cache_file(
+    dataset_name: str,
+    tokenizer,
+    n_samples: int,
+    seqlen: int,
+    seed: int,
+    return_tensors: bool,
+    cache_dir: str,
+    split: str | None = None,
+) -> Path:
+    cache_path = Path(cache_dir)
+    suffix = f"_split{split}" if split is not None else ""
+    tokenizer_key = _get_tokenizer_identity(tokenizer)
+    filename = (
+        f"{dataset_name}_calib_n{n_samples}_len{seqlen}_seed{seed}"
+        f"{suffix}_tensors{return_tensors}_tok{tokenizer_key}.pkl"
+    )
+    return cache_path / filename
+
+
+def _legacy_calibration_cache_file(
+    dataset_name: str,
+    n_samples: int,
+    seqlen: int,
+    seed: int,
+    return_tensors: bool,
+    cache_dir: str,
+    split: str | None = None,
+) -> Path:
+    cache_path = Path(cache_dir)
+    suffix = f"_split{split}" if split is not None else ""
+    return cache_path / f"{dataset_name}_calib_n{n_samples}_len{seqlen}_seed{seed}{suffix}_tensors{return_tensors}.pkl"
+
+
+def _validate_tensor_samples_with_vocab(samples, vocab_size: int | None, cache_label: str):
+    if vocab_size is None:
+        return
+    for sample_idx, sample in enumerate(samples):
+        if not isinstance(sample, torch.Tensor) or sample.numel() == 0:
+            continue
+        min_token = int(sample.min().item())
+        max_token = int(sample.max().item())
+        if min_token < 0 or max_token >= vocab_size:
+            raise ValueError(
+                f"{cache_label} contains token ids outside tokenizer vocabulary range "
+                f"[0, {vocab_size - 1}] (sample {sample_idx}, min={min_token}, max={max_token}). "
+                "Delete this cache and regenerate calibration data for the current model."
+            )
+
+
+def _load_cached_samples(cache_file: Path, tokenizer, return_tensors: bool, cache_label: str):
+    with open(cache_file, "rb") as handle:
+        samples = pickle.load(handle)
+    if return_tensors:
+        _validate_tensor_samples_with_vocab(samples, _get_tokenizer_vocab_size(tokenizer), cache_label)
+    return samples
 
 
 def get_c4_calibration_data(
@@ -28,11 +119,23 @@ def get_c4_calibration_data(
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
 
-    cache_file = cache_path / f"c4_calib_n{n_samples}_len{seqlen}_seed{seed}_tensors{return_tensors}.pkl"
+    cache_file = _calibration_cache_file(
+        "c4",
+        tokenizer,
+        n_samples,
+        seqlen,
+        seed,
+        return_tensors,
+        cache_dir,
+    )
     if cache_file.exists():
         print(f"  Loading from cache: {cache_file}")
-        with open(cache_file, "rb") as handle:
-            return pickle.load(handle)
+        return _load_cached_samples(cache_file, tokenizer, return_tensors, "calibration cache")
+
+    legacy_cache_file = _legacy_calibration_cache_file("c4", n_samples, seqlen, seed, return_tensors, cache_dir)
+    if legacy_cache_file.exists():
+        print(f"  Loading legacy cache: {legacy_cache_file}")
+        return _load_cached_samples(legacy_cache_file, tokenizer, return_tensors, "legacy calibration cache")
 
     random.seed(seed)
     url = "https://huggingface.co/datasets/allenai/c4/resolve/main/en/c4-train.00000-of-01024.json.gz"
@@ -98,11 +201,32 @@ def get_wikitext2_calibration_data(
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
 
-    cache_file = cache_path / f"wikitext2_calib_n{n_samples}_len{seqlen}_seed{seed}_split{split}_tensors{return_tensors}.pkl"
+    cache_file = _calibration_cache_file(
+        "wikitext2",
+        tokenizer,
+        n_samples,
+        seqlen,
+        seed,
+        return_tensors,
+        cache_dir,
+        split=split,
+    )
     if cache_file.exists():
         print(f"  Loading from cache: {cache_file}")
-        with open(cache_file, "rb") as handle:
-            return pickle.load(handle)
+        return _load_cached_samples(cache_file, tokenizer, return_tensors, "calibration cache")
+
+    legacy_cache_file = _legacy_calibration_cache_file(
+        "wikitext2",
+        n_samples,
+        seqlen,
+        seed,
+        return_tensors,
+        cache_dir,
+        split=split,
+    )
+    if legacy_cache_file.exists():
+        print(f"  Loading legacy cache: {legacy_cache_file}")
+        return _load_cached_samples(legacy_cache_file, tokenizer, return_tensors, "legacy calibration cache")
 
     random.seed(seed)
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split=split)

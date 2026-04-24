@@ -5,9 +5,11 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
+import src.calibration as calibration
 from src.post_correction.bias_correction import BiasCorrectionConfig, BiasCorrectionCorrection
 from src.post_correction.smart_flip import SmartFlipConfig, SmartFlipCorrection
 from src.quantization.awq import AWQConfig, AWQQuantizerXL
@@ -257,6 +259,97 @@ class GPTQPostCorrectionTests(unittest.TestCase):
         groups = quantizer._get_sequential_groups(full)
 
         self.assertEqual(groups, [list(full.keys())])
+
+    def test_gptq_rejects_calibration_tokens_outside_model_vocab(self):
+        from src.quantization.gptq import GPTQConfig, GPTQQuantizer
+
+        model = SimpleNamespace(
+            config=SimpleNamespace(use_cache=False, vocab_size=32768),
+            model=SimpleNamespace(layers=[torch.nn.Identity()]),
+        )
+        quantizer = GPTQQuantizer(
+            model=model,
+            tokenizer=object(),
+            device="cpu",
+            config=GPTQConfig(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "outside the model vocabulary range"):
+            quantizer.quantize_model_sequential([torch.tensor([[0, 32768]])])
+
+
+class CalibrationCacheTests(unittest.TestCase):
+    make_args = QuantizationAssemblyTests.make_args
+
+    def test_c4_tensor_cache_is_scoped_by_tokenizer_identity(self):
+        class FakeTokenizer:
+            def __init__(self, name_or_path, vocab_size, tokens):
+                self.name_or_path = name_or_path
+                self.vocab_size = vocab_size
+                self._tokens = tokens
+
+            def __call__(self, text, return_tensors="pt"):
+                del text, return_tensors
+                return SimpleNamespace(input_ids=self._tokens)
+
+            def decode(self, tokens, skip_special_tokens=True):
+                del tokens, skip_special_tokens
+                return self.name_or_path
+
+        texts = [{"text": "x" * 40}]
+        tokenizer_a = FakeTokenizer("model-a", 32768, torch.tensor([[1, 2, 3, 4]]))
+        tokenizer_b = FakeTokenizer("model-b", 128256, torch.tensor([[11, 12, 13, 14]]))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("src.calibration.load_dataset", return_value=texts):
+                samples_a = calibration.get_c4_calibration_data(
+                    tokenizer_a,
+                    n_samples=1,
+                    seqlen=4,
+                    seed=42,
+                    return_tensors=True,
+                    cache_dir=tmpdir,
+                )
+                samples_b = calibration.get_c4_calibration_data(
+                    tokenizer_b,
+                    n_samples=1,
+                    seqlen=4,
+                    seed=42,
+                    return_tensors=True,
+                    cache_dir=tmpdir,
+                )
+
+            cache_files = sorted(path.name for path in Path(tmpdir).glob("*.pkl"))
+
+        self.assertEqual(int(samples_a[0].max().item()), 4)
+        self.assertEqual(int(samples_b[0].max().item()), 14)
+        self.assertEqual(len(cache_files), 2)
+        self.assertNotEqual(cache_files[0], cache_files[1])
+
+    def test_legacy_tensor_cache_with_out_of_range_tokens_raises_clear_error(self):
+        legacy_sample = [torch.tensor([[0, 127799]])]
+        tokenizer = SimpleNamespace(
+            name_or_path="mistralai/Mistral-7B-v0.3",
+            vocab_size=32768,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            legacy_path = Path(tmpdir) / "c4_calib_n1_len2_seed42_tensorsTrue.pkl"
+            legacy_path.write_bytes(b"")
+            with open(legacy_path, "wb") as handle:
+                import pickle
+
+                pickle.dump(legacy_sample, handle)
+
+            with self.assertRaisesRegex(ValueError, "legacy calibration cache"):
+                calibration.get_c4_calibration_data(
+                    tokenizer,
+                    n_samples=1,
+                    seqlen=2,
+                    seed=42,
+                    return_tensors=True,
+                    cache_dir=tmpdir,
+                )
 
     def test_gptq_quantizer_save_and_load_raw_artifacts_round_trip(self):
         from src.quantization.gptq import GPTQConfig, GPTQQuantizer
@@ -844,7 +937,4 @@ class GPTQPostCorrectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
 

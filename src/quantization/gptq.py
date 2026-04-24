@@ -598,6 +598,22 @@ class GPTQQuantizer:
                 prepared[key] = value
         return prepared
 
+    def _validate_calibration_data(self, calibration_data):
+        vocab_size = getattr(self.model.config, "vocab_size", None)
+        if vocab_size is None:
+            return
+        for sample_idx, batch in enumerate(calibration_data):
+            if not isinstance(batch, torch.Tensor) or batch.numel() == 0:
+                continue
+            min_token = int(batch.min().item())
+            max_token = int(batch.max().item())
+            if min_token < 0 or max_token >= vocab_size:
+                raise ValueError(
+                    "Calibration batch contains token ids outside the model vocabulary range "
+                    f"[0, {vocab_size - 1}] (sample {sample_idx}, min={min_token}, max={max_token}). "
+                    "Clear calibration caches for this model and regenerate them."
+                )
+
     def _get_sequential_groups(self, full):
         default = [list(full.keys())]
         preferred = [
@@ -636,6 +652,7 @@ class GPTQQuantizer:
 
         if not calibration_data:
             raise ValueError("GPTQ requires tensor calibration data")
+        self._validate_calibration_data(calibration_data)
 
         use_cache = self.model.config.use_cache
         self.model.config.use_cache = False
