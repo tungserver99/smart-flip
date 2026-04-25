@@ -103,6 +103,27 @@ def _load_cached_samples(cache_file: Path, tokenizer, return_tensors: bool, cach
     return samples
 
 
+def _try_load_calibration_cache(
+    cache_file: Path,
+    tokenizer,
+    return_tensors: bool,
+    cache_label: str,
+):
+    if not cache_file.exists():
+        return None
+    try:
+        print(f"  Loading {cache_label}: {cache_file}")
+        return _load_cached_samples(cache_file, tokenizer, return_tensors, cache_label)
+    except ValueError as exc:
+        print(f"  Ignoring invalid {cache_label}: {exc}")
+        try:
+            cache_file.unlink()
+            print(f"  Deleted invalid cache file: {cache_file}")
+        except OSError:
+            pass
+        return None
+
+
 def get_c4_calibration_data(
     tokenizer,
     n_samples: int = 128,
@@ -128,14 +149,30 @@ def get_c4_calibration_data(
         return_tensors,
         cache_dir,
     )
-    if cache_file.exists():
-        print(f"  Loading from cache: {cache_file}")
-        return _load_cached_samples(cache_file, tokenizer, return_tensors, "calibration cache")
+    cached = _try_load_calibration_cache(cache_file, tokenizer, return_tensors, "calibration cache")
+    if cached is not None:
+        return cached
 
     legacy_cache_file = _legacy_calibration_cache_file("c4", n_samples, seqlen, seed, return_tensors, cache_dir)
-    if legacy_cache_file.exists():
-        print(f"  Loading legacy cache: {legacy_cache_file}")
-        return _load_cached_samples(legacy_cache_file, tokenizer, return_tensors, "legacy calibration cache")
+    legacy_cached = _try_load_calibration_cache(
+        legacy_cache_file,
+        tokenizer,
+        return_tensors,
+        "legacy calibration cache",
+    )
+    if legacy_cached is not None:
+        try:
+            with open(cache_file, "wb") as handle:
+                pickle.dump(legacy_cached, handle)
+            print(f"  Migrated legacy cache to: {cache_file}")
+            try:
+                legacy_cache_file.unlink()
+                print(f"  Deleted legacy cache file: {legacy_cache_file}")
+            except OSError:
+                pass
+        except OSError:
+            pass
+        return legacy_cached
 
     random.seed(seed)
     url = "https://huggingface.co/datasets/allenai/c4/resolve/main/en/c4-train.00000-of-01024.json.gz"
@@ -211,9 +248,9 @@ def get_wikitext2_calibration_data(
         cache_dir,
         split=split,
     )
-    if cache_file.exists():
-        print(f"  Loading from cache: {cache_file}")
-        return _load_cached_samples(cache_file, tokenizer, return_tensors, "calibration cache")
+    cached = _try_load_calibration_cache(cache_file, tokenizer, return_tensors, "calibration cache")
+    if cached is not None:
+        return cached
 
     legacy_cache_file = _legacy_calibration_cache_file(
         "wikitext2",
@@ -224,9 +261,25 @@ def get_wikitext2_calibration_data(
         cache_dir,
         split=split,
     )
-    if legacy_cache_file.exists():
-        print(f"  Loading legacy cache: {legacy_cache_file}")
-        return _load_cached_samples(legacy_cache_file, tokenizer, return_tensors, "legacy calibration cache")
+    legacy_cached = _try_load_calibration_cache(
+        legacy_cache_file,
+        tokenizer,
+        return_tensors,
+        "legacy calibration cache",
+    )
+    if legacy_cached is not None:
+        try:
+            with open(cache_file, "wb") as handle:
+                pickle.dump(legacy_cached, handle)
+            print(f"  Migrated legacy cache to: {cache_file}")
+            try:
+                legacy_cache_file.unlink()
+                print(f"  Deleted legacy cache file: {legacy_cache_file}")
+            except OSError:
+                pass
+        except OSError:
+            pass
+        return legacy_cached
 
     random.seed(seed)
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split=split)

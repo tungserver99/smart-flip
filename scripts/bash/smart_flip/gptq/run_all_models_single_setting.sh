@@ -179,7 +179,7 @@ SMART_FLIP_POST_CORRECTION="smart_flip"
 
 MODEL_PATHS=(
   # "meta-llama/Meta-Llama-3-8B"
-  "meta-llama/Llama-3.1-8B"
+  # "meta-llama/Llama-3.1-8B"
   "mistralai/Mistral-7B-v0.3"
   "Qwen/Qwen2.5-7B"
 )

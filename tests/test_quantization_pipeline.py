@@ -326,23 +326,34 @@ class CalibrationCacheTests(unittest.TestCase):
         self.assertEqual(len(cache_files), 2)
         self.assertNotEqual(cache_files[0], cache_files[1])
 
-    def test_legacy_tensor_cache_with_out_of_range_tokens_raises_clear_error(self):
+    def test_legacy_tensor_cache_with_out_of_range_tokens_is_regenerated(self):
+        class FakeTokenizer:
+            def __init__(self, name_or_path, vocab_size, tokens):
+                self.name_or_path = name_or_path
+                self.vocab_size = vocab_size
+                self._tokens = tokens
+
+            def __call__(self, text, return_tensors="pt"):
+                del text, return_tensors
+                return SimpleNamespace(input_ids=self._tokens)
+
         legacy_sample = [torch.tensor([[0, 127799]])]
-        tokenizer = SimpleNamespace(
-            name_or_path="mistralai/Mistral-7B-v0.3",
-            vocab_size=32768,
+        tokenizer = FakeTokenizer(
+            "mistralai/Mistral-7B-v0.3",
+            32768,
+            torch.tensor([[11, 12, 13, 14]]),
         )
+        texts = [{"text": "x" * 40}]
 
         with tempfile.TemporaryDirectory() as tmpdir:
             legacy_path = Path(tmpdir) / "c4_calib_n1_len2_seed42_tensorsTrue.pkl"
-            legacy_path.write_bytes(b"")
             with open(legacy_path, "wb") as handle:
                 import pickle
 
                 pickle.dump(legacy_sample, handle)
 
-            with self.assertRaisesRegex(ValueError, "legacy calibration cache"):
-                calibration.get_c4_calibration_data(
+            with patch("src.calibration.load_dataset", return_value=texts):
+                samples = calibration.get_c4_calibration_data(
                     tokenizer,
                     n_samples=1,
                     seqlen=2,
@@ -350,6 +361,12 @@ class CalibrationCacheTests(unittest.TestCase):
                     return_tensors=True,
                     cache_dir=tmpdir,
                 )
+
+            self.assertEqual(len(samples), 1)
+            self.assertLess(int(samples[0].max().item()), tokenizer.vocab_size)
+            self.assertFalse(legacy_path.exists())
+            migrated = list(Path(tmpdir).glob("c4_calib_n1_len2_seed42_tensorsTrue_tok*.pkl"))
+            self.assertEqual(len(migrated), 1)
 
     def test_gptq_quantizer_save_and_load_raw_artifacts_round_trip(self):
         from src.quantization.gptq import GPTQConfig, GPTQQuantizer
@@ -937,4 +954,3 @@ class CalibrationCacheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
